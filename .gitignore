@@ -1,0 +1,11 @@
+# Build output and local content-addressed stores, at any workspace depth.
+target/
+.mdx/
+cache/
+rom/
+/crates/mdcore/testdata/*.md
+.venv/
+__pycache__/
+*.pyc
+*.swp
+.DS_Store

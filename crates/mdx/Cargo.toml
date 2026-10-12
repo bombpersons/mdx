@@ -1,0 +1,29 @@
+[package]
+name = "mdx"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Agent-first reverse-engineering toolkit for Mega Drive cartridges"
+
+[[bin]]
+name = "mdx"
+path = "src/main.rs"
+
+[dependencies]
+mdcore = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+png = "0.17"
+clap = { version = "4", features = ["derive"] }
+flate2 = "1"
+schemars = { workspace = true }
+rmcp = { version = "=3.5.1", features = ["transport-io"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-std"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+tempfile = "3"
+
+[dev-dependencies]
+jsonschema = { version = "0.46", default-features = false }

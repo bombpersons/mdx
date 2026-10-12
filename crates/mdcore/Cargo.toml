@@ -1,0 +1,17 @@
+[package]
+name = "mdcore"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Mega Drive emulation and analysis engine behind the mdx toolkit"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+schemars = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"

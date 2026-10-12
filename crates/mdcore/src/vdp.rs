@@ -52,6 +52,9 @@ pub struct Vdp {
     /// CD code bits from the control-port write that is in effect.
     pub code: u8,
     pub pending_dm: bool,
+    /// Fill/copy owns internal VDP slots while the 68000 keeps executing.
+    /// Separate from external DMA's CPU-bus stall and the fill-data latch.
+    internal_dma_master_cycles: u32,
     /// A first control-command word has been received.
     pub control_pending: bool,
     /// DMA requests are observable even while DMA transfer is unsupported.
@@ -91,7 +94,7 @@ pub const LINES_PER_FRAME: u32 = 262;
 /// First line of the vertical blank interval.
 pub const VBLANK_START: u32 = 224;
 /// Last line of vertical blanking, NTSC.
-pub const VBLANK_END: u32 = 242;
+pub const VBLANK_END: u32 = LINES_PER_FRAME - 1;
 /// One scanline spans 3420 master clocks. The 68000 runs at master / 7.
 /// `dot` is a normalized 896-unit line coordinate, not a physical clock.
 pub const MASTER_CYCLES_PER_LINE: u32 = 3420;
@@ -118,6 +121,7 @@ impl Vdp {
 
     /// Advance device time without rounding a DMA duration to whole CPU clocks.
     pub fn advance_master_cycles(&mut self, cycles: u32) {
+        self.internal_dma_master_cycles = self.internal_dma_master_cycles.saturating_sub(cycles);
         let scaled = self.cpu_clock_remainder + u64::from(cycles) * u64::from(DOTS_PER_LINE);
         let dots = scaled / u64::from(MASTER_CYCLES_PER_LINE);
         self.cpu_clock_remainder = scaled % u64::from(MASTER_CYCLES_PER_LINE);
@@ -163,6 +167,58 @@ impl Vdp {
         elapsed
     }
 
+    pub fn dma_busy(&self) -> bool {
+        self.pending_dm || self.internal_dma_master_cycles != 0
+    }
+
+    /// Internal DMA uses the same reference access slots but does not halt the
+    /// CPU. Fill uses one slot/byte plus two startup slots; copy uses two.
+    pub fn start_internal_dma(&mut self, mut bytes: u32, copy: bool) {
+        let mut line = self.line;
+        let mut position = ((u64::from(self.dot) * u64::from(MASTER_CYCLES_PER_LINE)
+            + self.cpu_clock_remainder)
+            / u64::from(DOTS_PER_LINE)) as u32;
+        let rate_at = |line| {
+            let blank =
+                !self.display_enabled() || (VBLANK_START..LINES_PER_FRAME - 1).contains(&line);
+            let rate = match (blank, self.registers[12] & 1 != 0) {
+                (false, false) => 16,
+                (false, true) => 18,
+                (true, false) => 166,
+                (true, true) => 204,
+            };
+            if copy {
+                rate / 2
+            } else {
+                rate
+            }
+        };
+        let mut elapsed = if copy {
+            0
+        } else {
+            2 * (MASTER_CYCLES_PER_LINE / rate_at(line))
+        };
+        position += elapsed;
+        if position >= MASTER_CYCLES_PER_LINE {
+            position -= MASTER_CYCLES_PER_LINE;
+            line = (line + 1) % LINES_PER_FRAME;
+        }
+        while bytes != 0 {
+            let rate = rate_at(line);
+            let available = MASTER_CYCLES_PER_LINE - position;
+            let capacity = available * rate / MASTER_CYCLES_PER_LINE;
+            if bytes < capacity {
+                elapsed += bytes * MASTER_CYCLES_PER_LINE / rate;
+                break;
+            }
+            bytes -= capacity;
+            elapsed += available;
+            line = (line + 1) % LINES_PER_FRAME;
+            position = 0;
+        }
+        self.internal_dma_master_cycles = elapsed;
+    }
+
     /// Advance the dot clock and raise interrupt requests on the edges.
     pub fn advance(&mut self, dots: u32) {
         let mut left = dots;
@@ -174,6 +230,10 @@ impl Vdp {
                 self.dot = 0;
                 self.line += 1;
                 if self.line == VBLANK_START {
+                    // A completed video frame ends at the VBLANK edge, not
+                    // at scanline zero. GPGX system_frame_gen starts here,
+                    // polls controllers, then runs VBLANK and the active lines.
+                    self.frame += 1;
                     self.vint_pending = true;
                     self.vint_requests += 1;
                 }
@@ -189,7 +249,6 @@ impl Vdp {
                 }
                 if self.line >= LINES_PER_FRAME {
                     self.line = 0;
-                    self.frame += 1;
                 }
             }
         }
@@ -225,6 +284,7 @@ impl Vdp {
             vint_taken: 0,
             hint_pending: false,
             pending_dm: false,
+            internal_dma_master_cycles: 0,
             control_pending: false,
             dma_requests: 0,
             dma_bytes: 0,
@@ -245,10 +305,12 @@ impl Vdp {
         self.address_latch = 0;
         self.code = 0;
         self.dot = 0;
-        self.line = 0;
+        // Reset begins after VBLANK has risen; no VINT on this initial edge.
+        // The next completed frame reaches the same edge after 262 lines.
+        self.line = VBLANK_START;
         self.frame = 0;
         self.cpu_clock_remainder = 0;
-        self.vblank = false;
+        self.vblank = true;
         self.hblank = false;
         self.vint_pending = false;
         self.hint_pending = false;
@@ -256,6 +318,7 @@ impl Vdp {
         self.vint_taken = 0;
         self.hint_counter = 0;
         self.pending_dm = false;
+        self.internal_dma_master_cycles = 0;
         self.control_pending = false;
         self.dma_requests = 0;
         self.dma_bytes = 0;
@@ -365,6 +428,7 @@ impl Vdp {
             let raw = u16::from_be_bytes([self.registers[20], self.registers[19]]) as u32;
             let count = if raw == 0 { 0x1_0000 } else { raw };
             if self.code & 0xF == 1 {
+                self.start_internal_dma(count, false);
                 // GPGX vdp_dma_fill writes the high FIFO byte to adjacent
                 // VRAM addresses after the initial normal data-port word.
                 for _ in 0..count {
@@ -373,6 +437,10 @@ impl Vdp {
                         self.address_latch.wrapping_add(self.registers[15] as u32) & 0xFFFF;
                 }
                 self.dma_bytes += count as u64;
+                let source = u16::from_be_bytes([self.registers[22], self.registers[21]])
+                    .wrapping_add(count as u16);
+                self.registers[21] = source as u8;
+                self.registers[22] = (source >> 8) as u8;
                 self.registers[19] = 0;
                 self.registers[20] = 0;
             } else {
@@ -750,7 +818,7 @@ mod status_tests {
                 frames.dot,
                 frames.cpu_clock_remainder
             ),
-            (0, 0, 0, 0)
+            (0, VBLANK_START, 0, 0)
         );
     }
 

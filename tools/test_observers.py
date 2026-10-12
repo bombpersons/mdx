@@ -1,5 +1,6 @@
 """Independent authored-data checks for exporter/converter observer semantics."""
 import json
+import ctypes
 import pathlib
 import struct
 import tempfile
@@ -7,9 +8,19 @@ import unittest
 from md_bytes import word_bytes
 from mdx_trace_to_binary import convert
 from oracle_vdp_snapshot import normalize
+from libretro_abi import AvInfo, Geometry, Timing, Variable
 
 
 class ObserverTests(unittest.TestCase):
+    def test_libretro_av_and_variable_layout_match_the_public_c_abi(self):
+        self.assertEqual(ctypes.sizeof(Geometry),20)
+        self.assertEqual(ctypes.sizeof(Timing),16)
+        self.assertEqual(AvInfo.timing.offset,24)
+        self.assertEqual(ctypes.sizeof(AvInfo),40)
+        info=AvInfo(); info.timing.fps=60.0; info.timing.sample_rate=48000.0
+        self.assertEqual(bytes(info)[24:],struct.pack("dd",60.0,48000.0))
+        variable=Variable(b"test",None); variable.value=b"value"
+        self.assertEqual(variable.key,b"test");self.assertEqual(variable.value,b"value")
     def test_logical_word_bytes(self):
         self.assertEqual(word_bytes(bytes.fromhex("ff011234")), bytes.fromhex("01ff3412"))
         self.assertEqual(word_bytes(bytes.fromhex("01ff"), False), bytes.fromhex("01ff"))

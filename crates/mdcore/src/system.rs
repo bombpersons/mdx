@@ -349,6 +349,7 @@ impl System {
                     self.vdp.dma_unsupported = true;
                     return;
                 }
+                self.vdp.start_internal_dma(count, true);
                 for _ in 0..count {
                     let value = self.vdp.vram[(source as usize ^ 1) & 0xFFFF];
                     let destination = (self.vdp.address_latch as usize ^ 1) & 0xFFFF;
@@ -744,17 +745,13 @@ impl Bus for System {
 
 impl System {
     fn vdp_status(&mut self) -> u16 {
-        // The status register is a latch, not a live view. Bits 1 (VBLANK), 3
-        // (HBLANK), 4 (VINT), 5 (collision) and 6 (overflow) are cleared by the
-        // read itself, and the odd-frame bit follows the previous byte.
-        //
-        // Software depends on this heavily: the vertical-blank bit is polled
-        // directly by almost every Mega Drive game, and several wait in a loop
-        // on it before enabling interrupts. Returning a constant here makes
-        // those loops hang forever.
+        // DMA busy is bit1, HBLANK bit2, VBLANK bit3, VINT bit7. The first
+        // three are live device levels; reading does not clear them. A status
+        // read resets the two-word control-command latch. FIFO contention and
+        // sprite collision/overflow status are not fully modelled here.
         self.vdp.control_pending = false;
         let mut status = 0x0200u16; // FIFO empty (FIFO contention not yet modelled)
-        if self.vdp.pending_dm {
+        if self.vdp.dma_busy() {
             status |= 0x0002;
         }
         if self.vdp.vblank || !self.vdp.display_enabled() {

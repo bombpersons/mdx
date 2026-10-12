@@ -21,6 +21,107 @@ fn cartridge() -> Cartridge {
     Cartridge::from_bytes("synthetic-vdp.md", bytes).unwrap()
 }
 
+#[test]
+fn reset_and_completed_frames_use_the_visible_end_vblank_edge() {
+    use mdcore::vdp::{LINES_PER_FRAME, MASTER_CYCLES_PER_LINE, VBLANK_START};
+    let mut sys = System::new(cartridge());
+    assert_eq!(sys.vdp.line, VBLANK_START);
+    assert_eq!(sys.vdp.frame, 0);
+    assert_eq!(sys.vdp.vint_requests, 0, "reset is not an interrupt edge");
+    sys.vdp
+        .advance_master_cycles((LINES_PER_FRAME - VBLANK_START) * MASTER_CYCLES_PER_LINE);
+    assert_eq!(sys.vdp.line, 0);
+    assert_eq!(
+        sys.vdp.frame, 0,
+        "scanline wrap is not a completed visible frame"
+    );
+    sys.vdp
+        .advance_master_cycles(VBLANK_START * MASTER_CYCLES_PER_LINE);
+    assert_eq!(sys.vdp.line, VBLANK_START);
+    assert_eq!(sys.vdp.frame, 1);
+    assert_eq!(sys.vdp.vint_requests, 1);
+    sys.vdp.advance_master_cycles(19 * MASTER_CYCLES_PER_LINE);
+    assert!(sys.vdp.vblank, "NTSC line 243 remains inside VBLANK");
+    sys.vdp.advance_master_cycles(18 * MASTER_CYCLES_PER_LINE);
+    assert_eq!(sys.vdp.line, 261);
+    assert!(!sys.vdp.vblank);
+}
+
+#[test]
+fn internal_copy_is_busy_for_its_reference_slots_without_cpu_bus_stalls() {
+    let mut sys = System::new(cartridge());
+    for (reg, value) in [
+        (1, 0x14u16),
+        (12, 1),
+        (15, 1),
+        (19, 3),
+        (20, 0),
+        (21, 4),
+        (22, 0),
+        (23, 0xc0),
+    ] {
+        sys.write16(0xc00004, 0x8000 | reg << 8 | value);
+    }
+    sys.vdp.vram[5] = 0xab;
+    sys.vdp.vram[4] = 0xcd;
+    sys.vdp.vram[7] = 0xef;
+    sys.write32(0xc00004, 0x000000c0);
+    assert_eq!(
+        [sys.vdp.vram[1], sys.vdp.vram[0], sys.vdp.vram[3]],
+        [0xab, 0xcd, 0xef]
+    );
+    assert_eq!(sys.vdp.registers[21], 7);
+    assert_eq!(sys.vdp.dma_bus_stall_master_cycles, 0);
+    sys.vdp.advance_master_cycles(99);
+    assert_eq!(sys.read16(0xc00004) & 2, 2);
+    sys.vdp.advance_master_cycles(1);
+    assert_eq!(sys.read16(0xc00004) & 2, 0);
+}
+
+#[test]
+fn fill_busy_survives_the_data_write_and_expires_without_stalling_the_cpu() {
+    let mut sys = System::new(cartridge());
+    for (reg, value) in [
+        (1, 0x14u16),
+        (12, 1),
+        (15, 1),
+        (19, 204),
+        (20, 0),
+        (21, 3),
+        (22, 0),
+        (23, 0x80),
+    ] {
+        sys.write16(0xC00004, 0x8000 | reg << 8 | value);
+    }
+    sys.write32(0xC00004, 0x40000080);
+    assert_eq!(
+        sys.read16(0xC00004) & 2,
+        2,
+        "fill is busy awaiting its data word"
+    );
+    sys.write16(0xC00000, 0xABCD);
+    assert!(!sys.vdp.pending_dm);
+    assert_eq!(
+        sys.read16(0xC00004) & 2,
+        2,
+        "writing data does not finish the timed operation"
+    );
+    assert_eq!(sys.vdp.registers[21], 207);
+    sys.cpu.pc = 0xFF8000;
+    sys.cpu.prefetch = [0x4e71, 0x4e71];
+    let (cycles, error) = sys.step_instruction();
+    assert_eq!(error, None);
+    assert_eq!(cycles, 4);
+    assert_eq!(sys.cpu.pc, 0xFF8002);
+    assert_eq!(sys.vdp.dma_bus_stall_master_cycles, 0);
+    sys.vdp.advance_master_cycles(3420);
+    assert_eq!(sys.read16(0xC00004) & 2, 2);
+    sys.vdp.advance_master_cycles(32);
+    assert_eq!(sys.read16(0xC00004) & 2, 0);
+    sys.reset();
+    assert!(!sys.vdp.dma_busy());
+}
+
 /// The exact sequence the cartridge uses to configure the VDP.
 #[test]
 fn cartridge_register_writes_through_the_control_port() {
@@ -122,7 +223,7 @@ fn external_dma_advances_devices_while_the_cpu_waits_and_reset_clears_queued_wai
     assert_eq!(cycles, 4 + 3420u32.div_ceil(7));
     assert_eq!(sys.cpu.pc, 0xFF8002);
     assert_eq!(sys.vdp.dma_bus_stall_master_cycles, 3420);
-    assert_eq!(sys.vdp.line, 1);
+    assert_eq!(sys.vdp.line, mdcore::vdp::VBLANK_START + 1);
     sys.reset();
     assert_eq!(sys.vdp.dma_bus_stall_master_cycles, 0);
 }

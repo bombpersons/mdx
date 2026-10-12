@@ -9,6 +9,7 @@ Loadable through ctypes rather than a frontend: there is no SDL here, and no
 window is needed to answer the question.
 """
 import ctypes, sys, zlib, pathlib, json, os
+from libretro_abi import GameInfo, AvInfo, Variable
 
 def _find_core():
     """Locate the libretro core.
@@ -45,23 +46,12 @@ RETRO_ENVIRONMENT_SET_MEMORY_MAPS     = (36 | 0x10000)
 RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS = 11
 RETRO_ENVIRONMENT_SET_PERFORMANCE_LEVEL = 8
 
-class GameInfo(ctypes.Structure):
-    _fields_ = [("path", ctypes.c_char_p), ("data", ctypes.c_void_p),
-                ("size", ctypes.c_size_t), ("meta", ctypes.c_char_p)]
-
-class Rect(ctypes.Structure):
-    _fields_ = [("x", ctypes.c_uint), ("y", ctypes.c_uint),
-                ("w", ctypes.c_uint), ("h", ctypes.c_uint)]
-
-class AvInfo(ctypes.Structure):
-    _fields_ = [("geometry_base", Rect), ("aspect_ratio", ctypes.c_float),
-                ("hardware_base", ctypes.c_uint), ("hardware_sub", ctypes.c_uint)]
-
 frames = []          # (w, h, pitch, bytes)
 samples = []
 last = None
 pixel_format = [0]
 variables = {}
+variable_buffers = {}
 
 # --- libretro callbacks ----------------------------------------------------
 ENV = ctypes.CFUNCTYPE(ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p)
@@ -81,17 +71,14 @@ def env_cb(cmd, data):
         v = ctypes.cast(data, ctypes.c_void_p).value
         if v is None:
             return 0
-        var = ctypes.c_char_p(v)
-        class Var(ctypes.Structure):
-            _fields_ = [("key", ctypes.c_char_p), ("value", ctypes.c_char_p)]
-        sv = ctypes.cast(data, ctypes.POINTER(Var)).contents
+        sv = ctypes.cast(data, ctypes.POINTER(Variable)).contents
         found = variables.get(sv.key.decode(), None) if sv.key else None
         if found is None:
+            sv.value = None
             return 0
         out = ctypes.create_string_buffer(found.encode())
-        # Write into the union: both members are pointers of the same size.
-        ctypes.cast(data, ctypes.POINTER(ctypes.c_void_p))[0] = \
-            ctypes.cast(out, ctypes.c_void_p)
+        variable_buffers[sv.key] = out
+        sv.value = ctypes.cast(out, ctypes.c_char_p)
         return 1
     # Everything else (directories, variable registration, performance hints)
     # can be declined safely: the core defaults are what we want.
@@ -142,8 +129,8 @@ def run(rom_path, frames_wanted, input_events=None):
     info = GameInfo(str(rom_path).encode(), None, 0, None)
     ok = LIB.retro_load_game(ctypes.byref(info))
     print(json.dumps({"load_game_returned": ok,
-                      "av_base": [av.geometry_base.x, av.geometry_base.y,
-                                  av.geometry_base.w, av.geometry_base.h]}))
+                      "av_base": [av.geometry.base_width, av.geometry.base_height,
+                                  av.geometry.max_width, av.geometry.max_height]}))
     for n in range(1, frames_wanted + 1):
         while next_event < len(input_events) and input_events[next_event]["frame"] <= n - 1:
             event = input_events[next_event]

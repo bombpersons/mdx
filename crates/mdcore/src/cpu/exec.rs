@@ -987,7 +987,7 @@ impl M68000 {
             self.set_nz(Size::Word, quotient);
             return Ok((140, 0));
         }
-        if ir & 0xF1C0 == 0x82C0 {
+        if ir & 0xF1C0 == 0x81C0 {
             let ea = self.effective_address(bus, decode_mode((ir >> 3) & 7, reg), reg, Size::Word);
             let divisor = self.read_ea(bus, &ea, Size::Word) as u16 as i16 as i32;
             let target = ((ir >> 9) & 7) as usize;
@@ -995,14 +995,28 @@ impl M68000 {
             if divisor == 0 {
                 return Err(Exception::DivideByZero);
             }
-            let quotient = dividend / divisor;
+            // GPGX's explicit MIN/-1 case produces zero and Z rather than
+            // invoking host signed overflow (m68kops.h divs_16_i/d handlers).
+            if dividend == i32::MIN && divisor == -1 {
+                self.d[target] = 0;
+                self.sr.set_flag(N, false);
+                self.sr.set_flag(Z, true);
+                self.sr.set_flag(V, false);
+                self.sr.set_flag(C, false);
+                return Ok((158, 0));
+            }
+            // Widen before division so no host overflow can panic analysis.
+            let quotient = i64::from(dividend) / i64::from(divisor);
             if quotient > 32767 || quotient < -32768 {
                 self.sr.set_flag(V, true);
+                self.sr.set_flag(N, true);
+                self.sr.set_flag(C, false);
                 return Ok((158, 0));
             }
             self.sr.set_flag(V, false);
             self.sr.set_flag(C, false);
-            self.d[target] = ((dividend % divisor) << 16) as u32 | (quotient as u32 & 0xFFFF);
+            let remainder = i64::from(dividend) % i64::from(divisor);
+            self.d[target] = ((remainder as u32 & 0xffff) << 16) | (quotient as u32 & 0xFFFF);
             self.set_nz(Size::Word, quotient as u32 & 0xFFFF);
             return Ok((158, 0));
         }
@@ -1016,8 +1030,10 @@ impl M68000 {
 
     fn line_b<B: Bus>(&mut self, bus: &mut B, ir: u16) -> Step {
         let reg = (ir & 7) as u8;
-        if ir & 0xF138 == 0xB108 {
+        if ir & 0xF138 == 0xB108 && ir & 0x00C0 != 0x00C0 {
             // CMPM: both operands advance by the operation size.
+            // Size 11 instead selects CMPA.L An,An; the broad addressing
+            // mask overlaps that family, which must not increment either An.
             let size = Size::from_bits((ir >> 6) & 3);
             let src = reg as usize;
             let dst = ((ir >> 9) & 7) as usize;

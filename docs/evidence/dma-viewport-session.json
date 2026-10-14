@@ -1,0 +1,156 @@
+{
+  "date": "2026-10-14",
+  "schema": "mdx.dma-viewport-checkpoint.v1",
+  "fix": "Latch predicted external-DMA viewport height on each physical frame edge",
+  "original_known_gap_regression": {
+    "now_passes": true,
+    "default_enabled": true,
+    "known_gap_cases": 2,
+    "expected_unchanged": true
+  },
+  "expanded_dma_matrix": {
+    "binary_sha256": "4253a398818b576afd6a40a0db57e65ea047019125216282afd6bf95100cc42c",
+    "oracle_core_sha256": "1ba3f40ed6aea2511b9c0d48d079283a884ac8667b916f772443f717e49db04f",
+    "oracle_opcodes_sha256": "d3ff2631658e589813d2915ba3dc03b9fd2097761f6eb221fc6264a4b8d1d6f0",
+    "equal": 96,
+    "total": 96,
+    "counter_samples": 3072
+  },
+  "default_tests": {
+    "passed": 216,
+    "failed": 0,
+    "ignored": 23
+  },
+  "python_tests": {
+    "passed": 6,
+    "failed": 0
+  },
+  "golden_tests": {
+    "passed": 13,
+    "failed": 0,
+    "ignored": 0,
+    "distinct_frozen_image_checkpoints": 27,
+    "candidate_binary_sha256": "4253a398818b576afd6a40a0db57e65ea047019125216282afd6bf95100cc42c"
+  },
+  "state_parity": {
+    "schema": "mdx.state-smoke.v1",
+    "binary_sha256": "4253a398818b576afd6a40a0db57e65ea047019125216282afd6bf95100cc42c",
+    "rom_sha256": "85e0782411cf50ea92a9982dac1942679f738d46a58fdda5d7d82b943512afd8",
+    "input_sha256": "d5529916a5b66cb2183a9d7f93d5f15d43b9d8aa926c32536d52beaeda92d22d",
+    "split_frame": 2700,
+    "final_frame": 4500,
+    "state_bytes": 374662,
+    "full_state_equal": true,
+    "memory_equal": true,
+    "screenshot_equal": true,
+    "zero_step_ram_state_equal": true,
+    "boot_trace_watch_state_equal": true,
+    "uninterrupted_steps": 43356903,
+    "checkpoint_steps": 26105182,
+    "resumed_steps": 17251721,
+    "extended_frame": null,
+    "extended_steps": null,
+    "checkpoint_state": "sha256:266c79299cac28a317d258b29136c59facbbcc06591442064d9e999baf333762",
+    "final_state": "sha256:d874c82efbcbfae66450d8b120bd397a3ac06e1105e78ce0d63fd8dcb88db0fe",
+    "limitations": [
+      "mdcore continuation comparison, not hardware/audio equivalence",
+      "ROM/replay/oracle execution and frozen images unchanged"
+    ]
+  },
+  "published_mcp": {
+    "binary_sha256": "8b5260d70973b423434c5c4318cfbb031b4671edc8e0f8fddb6992bc531b336f",
+    "format": 3,
+    "tool_count": 18,
+    "large_dma_counter_samples_equal": true,
+    "zero_step_state_equal": true
+  },
+  "audio_groundwork": {
+    "standalone_psg": {
+      "schema": "mdx.psg-edges.v1",
+      "cases": 176,
+      "operations": 3472,
+      "equal": 3472,
+      "source_sha256": "098f13d95a0b366d1c874867f76aea15c36604ce968c00ee39f5cac8ecd79af4",
+      "harness_sha256": "e557b79c5137d027c3a7011f271a06baadd01f0533863744553858ab2f47c68d",
+      "binary_sha256": "4e3bd56e0e025d2413e8e9925e9a91a18ba2c298e844748ca8bc7d230bbfb3d0",
+      "limitations": [
+        "integrated PSG,100% gain, both channels; logical pulse deltas/phase only",
+        "no PCM filtering, mixer, analog or full-System equivalence claim"
+      ],
+      "differences": []
+    },
+    "reference_audio": {
+      "schema": "mdx.reference-audio.v1",
+      "source": "unchanged GPGX libretro callback PCM",
+      "rom_sha256": "85e0782411cf50ea92a9982dac1942679f738d46a58fdda5d7d82b943512afd8",
+      "core_sha256": "1ba3f40ed6aea2511b9c0d48d079283a884ac8667b916f772443f717e49db04f",
+      "input_sha256": null,
+      "start_frame": 1900,
+      "frames": 60,
+      "wav_sha256": "6001e5cc2b4f2c9c13316d8ce534a5ba03342bf11d510f440c4570d2470709cc",
+      "sample_rate": 44100,
+      "channels": 2,
+      "bits_per_sample": 16,
+      "sample_frames": 44157,
+      "duration_seconds": 1.0012925170068028,
+      "nonzero_samples": 88298,
+      "peak": 4324,
+      "rms": 1441.2148504388053,
+      "limitations": [
+        "reference output, not mdcore synthesis or hardware equivalence",
+        "zero-based frame interval; preceding audio warmup retained internally"
+      ]
+    },
+    "reference_memory_preserved_after_callback_fix": {
+      "frame": 6000,
+      "buffer_digests_equal": {
+        "wram": true,
+        "vram": true,
+        "cram": true,
+        "vsram": true
+      },
+      "z80_ram_equal": true,
+      "core_sha256": "1ba3f40ed6aea2511b9c0d48d079283a884ac8667b916f772443f717e49db04f"
+    },
+    "FM_backend": {
+      "package": "ymfm-sys",
+      "version": "0.2.0",
+      "status": "not_fetched",
+      "blocker": "Cargo cannot resolve index.crates.io inside this workspace",
+      "helper": "tools/fetch_audio_backend.py"
+    },
+    "tool_audio_export": "not implemented",
+    "psg_connected_to_System": false
+  },
+  "digests": {
+    "crates/mdcore/src/vdp.rs": "83a7096ebd5eba5566326a45f1e477a3dddc1e82fa52484067b11efbe55f588e",
+    "crates/mdcore/src/psg.rs": "e0a00c1621acc5b8d7061de538c48d1b647df7298f3a96d6497740f03c4c5ae6",
+    "crates/mdcore/tests/fixtures/dma_hv_samples.json": "896b7c6c6cd50e8c6fe0984681e754e279c8bb3667f0f9d90f3beb5a523e9980",
+    "crates/mdcore/tests/fixtures/dma_viewport_hv.json": "2634b06932bce59a522063e5325d5166273309d9d4cf0947ef6193bd83e60143",
+    "crates/mdcore/tests/fixtures/psg_edges.json": "e5e38fa203210f784f91139fd19252cffcb72643bb0f9bccce60187a279b7b50",
+    "tools/probes/dma_viewport_phase.py": "af2d0d30ae4002b0de066d6323d848ae659dcd1ec521a490e75ce7d63b61b12e",
+    "tools/probes/psg_edges.py": "3f419908b70965007542fbd360c03479e4777aea80fd0b80288747b31e70aa66",
+    "tools/oracle_psg_probe.c": "e557b79c5137d027c3a7011f271a06baadd01f0533863744553858ab2f47c68d",
+    "tools/oracle_gpgx.py": "67c7ccdc739066fa94fb75347bc558f3e0c326e1fd581f0e1eefd98e9c689a48",
+    "tools/pcm_capture.py": "47f3a3bba03b069ed42ff76334e42a771e3ac3f87740374b8a9755daf38d2a2a",
+    "tools/oracle_audio.py": "2365f47d987ed0e24a3505a42d4774b8acf0f0eb49fd3f322e35888e7b030718",
+    "tools/fetch_audio_backend.py": "d097955232d140e27f86fa14560db63d6641ea516785ae34c64eea52bb6c3b80"
+  },
+  "reproduction": [
+    "cargo test --workspace",
+    "cargo build --release -p mdx",
+    "python3 tools/probes/dma_viewport_phase.py --out NEW_OUTPUT",
+    "cargo build --release -p mdcore --example psg_probe",
+    "python3 tools/probes/psg_edges.py --out NEW_OUTPUT",
+    "python3 -m unittest discover -s tools -p test_observers.py",
+    "python3 tools/oracle_audio.py --rom \"rom/original/Cadash (USA, Korea).md\" --start-frame 1900 --frames 60 --out NEW_OUTPUT"
+  ],
+  "limitations": [
+    "External DMA samples, not all internal DMA or hardware timing equivalence",
+    "PSG checks cover unfiltered pulse deltas and generator phase, not PCM or full-System sound",
+    "Reference WAV is unchanged GPGX output; mdcore WAV export remains incomplete",
+    "Format3 machine layout unchanged; standalone PSG is not part of System/state yet",
+    "FM dependency fetch remains a required external step; helper was syntax-checked but network fetch/native compile was unavailable",
+    "No ROM, original oracle execution, replay input or frozen expected capture changed; no commits"
+  ]
+}

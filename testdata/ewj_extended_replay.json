@@ -1,0 +1,16 @@
+{
+  "events": [
+    {"frame":1600,"port":0,"buttons":["start"]},
+    {"frame":1616,"port":0,"buttons":[]},
+    {"frame":2000,"port":0,"buttons":["start"]},
+    {"frame":2016,"port":0,"buttons":[]},
+    {"frame":3000,"port":0,"buttons":["start"]},
+    {"frame":3016,"port":0,"buttons":[]},
+    {"frame":4000,"port":0,"buttons":["right","b","c"]},
+    {"frame":4120,"port":0,"buttons":[]},
+    {"frame":6500,"port":0,"buttons":["right","b","c"]},
+    {"frame":6900,"port":0,"buttons":[]},
+    {"frame":7000,"port":0,"buttons":["left","b"]},
+    {"frame":7500,"port":0,"buttons":[]}
+  ]
+}

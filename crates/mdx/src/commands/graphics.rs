@@ -26,6 +26,34 @@ pub struct GraphicsData {
     planes: Vec<PlaneSummary>,
     sprite_count: usize,
     linked_sprites: Vec<usize>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    sprite_groups: Vec<SpriteGroupImage>,
+}
+
+/// Caller-selected hardware sprites to compose into one image. Grouping is
+/// never inferred from neighbouring table entries.
+#[derive(Debug, Clone, serde::Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SpriteGroup {
+    /// File-name label: letters, digits, '-' and '_' (1..32).
+    pub name: String,
+    /// Sprite table indices; earlier entries are drawn in front.
+    #[schemars(length(min = 1, max = 80))]
+    pub sprites: Vec<usize>,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+struct SpriteGroupImage {
+    name: String,
+    sprites: Vec<usize>,
+    /// Union bounds in screen coordinates (sprite x/y minus 128).
+    x: i32,
+    y: i32,
+    width: usize,
+    height: usize,
+    /// Transparent RGBA PNG: pattern index 0 is transparent; sprites keep
+    /// their own palette and flips.
+    image: Artifact,
 }
 
 #[derive(Serialize, schemars::JsonSchema)]
@@ -100,7 +128,22 @@ pub fn run(
     path: &Path,
     output: Option<&Path>,
     store: &Path,
+    groups: &[SpriteGroup],
 ) -> Result<Envelope<GraphicsData>, Failure> {
+    if groups.len() > 16
+        || groups.iter().any(|g| {
+            g.name.is_empty()
+                || g.name.len() > 32
+                || !g.name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                || g.sprites.is_empty()
+                || g.sprites.len() > 80
+        })
+    {
+        return Err(failure(
+            "invalid_arguments",
+            "sprite_groups: at most 16 groups, names of 1..32 letters/digits/-/_, 1..80 sprites each",
+        ));
+    }
     let VerifiedSnapshot {
         vdp: v,
         memory_artifacts,
@@ -231,6 +274,55 @@ pub fn run(
             &bytes,
         )?);
     }
+    let mut sprite_groups = Vec::new();
+    for group in groups {
+        if let Some(bad) = group.sprites.iter().find(|i| **i >= sprite_count) {
+            return Err(failure("invalid_arguments", format!("sprite index {bad} is outside the {sprite_count}-entry table")));
+        }
+        let members: Vec<&Sprite> = group.sprites.iter().map(|i| &sprites[*i]).collect();
+        let left = members.iter().map(|s| s.x).min().unwrap();
+        let top = members.iter().map(|s| s.y).min().unwrap();
+        let right = members.iter().map(|s| s.x + s.columns as i32 * 8).max().unwrap();
+        let bottom = members.iter().map(|s| s.y + s.rows as i32 * 8).max().unwrap();
+        let (width, height) = ((right - left) as usize, (bottom - top) as usize);
+        let mut rgba = vec![0u8; width * height * 4];
+        // Draw back to front so the first listed sprite ends up in front.
+        for sprite in members.iter().rev() {
+            let a = &sprite.attributes;
+            for column in 0..sprite.columns {
+                for row in 0..sprite.rows {
+                    let tile = usize::from((a.tile + (column * sprite.rows + row) as u16) & 0x07FF);
+                    let dx = if a.horizontal_flip { sprite.columns - 1 - column } else { column };
+                    let dy = if a.vertical_flip { sprite.rows - 1 - row } else { row };
+                    for ty in 0..8 {
+                        for tx in 0..8 {
+                            let sx = if a.horizontal_flip { 7 - tx } else { tx };
+                            let sy = if a.vertical_flip { 7 - ty } else { ty };
+                            let texel = indices[tile * 64 + sy * 8 + sx];
+                            if texel == 0 {
+                                continue;
+                            }
+                            let (r, g, b) = v.palette(usize::from(a.palette) * 16 + usize::from(texel));
+                            let px = (sprite.x - left) as usize + dx * 8 + tx;
+                            let py = (sprite.y - top) as usize + dy * 8 + ty;
+                            rgba[(py * width + px) * 4..][..4].copy_from_slice(&[r, g, b, 255]);
+                        }
+                    }
+                }
+            }
+        }
+        let bytes = encode_rgba_png(&rgba, width, height)
+            .map_err(|e| failure("graphics_write_failed", e.to_string()))?;
+        sprite_groups.push(SpriteGroupImage {
+            name: group.name.clone(),
+            sprites: group.sprites.clone(),
+            x: left,
+            y: top,
+            width,
+            height,
+            image: artifact(output, &format!("sprites-{}", group.name), "png", &bytes)?,
+        });
+    }
     let layout = serde_json::json!({"schema":"mdx.graphics.layout.v1", "registers":v.registers.to_vec(),
         "planes":planes, "sprite_table_base":sprite_base, "sprites":sprites,
         "linked_sprites":linked_sprites, "horizontal_scroll_base":usize::from(v.registers[13] & 0x3F) << 10,
@@ -261,6 +353,20 @@ pub fn run(
             planes: planes.into_iter().map(|p| p.summary).collect(),
             sprite_count,
             linked_sprites,
+            sprite_groups,
         },
     ))
+}
+
+fn encode_rgba_png(rgba: &[u8], width: usize, height: usize) -> Result<Vec<u8>, png::EncodingError> {
+    let mut bytes = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut bytes, width as u32, height as u32);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.set_compression(png::Compression::Best);
+        encoder.set_adaptive_filter(png::AdaptiveFilterType::Adaptive);
+        encoder.write_header()?.write_image_data(rgba)?;
+    }
+    Ok(bytes)
 }

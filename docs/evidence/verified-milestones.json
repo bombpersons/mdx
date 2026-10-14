@@ -1,0 +1,54 @@
+{
+  "scope": "finite decoded-RGB comparisons; no full game or cycle-accuracy claim",
+  "rom_sha256": "5fd1494a6a47e33d85b22ebbc26a1156f31bb539cf54d4e109e1bcbddef8b4eb",
+  "comparisons": [
+    {
+      "frame": 1200,
+      "actual": "docs/screenshots/frame-1200.png",
+      "actual_png_sha256": "7c723b07bccad36ddafe18231bace1aa50ccbbcab4e790ce275e6145c391c7e7",
+      "reference": "testdata/oracle_kb_frame1200_rgb.png",
+      "reference_png_sha256": "4b0e5cfbcee820d43a8f0af7ba247f93851d8abc8858024030bb9bc7f8a1668b",
+      "dimensions": [
+        320,
+        224
+      ],
+      "changed_pixels": 0
+    },
+    {
+      "frame": 3600,
+      "actual": "docs/screenshots/frame-3600.png",
+      "actual_png_sha256": "61aefa267f3aaef36cc374387edaa44e948b5fe236a6bef1af82dd72a44361a0",
+      "reference": "testdata/oracle_kb_character3600_rgb.png",
+      "reference_png_sha256": "7a453096f7dc40bc21a476ecdc492e56ffcea746cfe452067cfa3dbc1c46b470",
+      "dimensions": [
+        320,
+        224
+      ],
+      "changed_pixels": 0
+    },
+    {
+      "frame": 3900,
+      "actual": "docs/screenshots/frame-3900.png",
+      "actual_png_sha256": "0e881d80e189d6c91b209a803babd7f11f8c53bd1d39ac125e89e37012c6c160",
+      "reference": "testdata/oracle_kb_difficulty3900_rgb.png",
+      "reference_png_sha256": "14cb66c5971f0690cce4ef4131b4ab9287a1b9180550b4e829258d67950a3713",
+      "dimensions": [
+        320,
+        224
+      ],
+      "changed_pixels": 0
+    },
+    {
+      "frame": 4300,
+      "actual": "docs/screenshots/frame-4300.png",
+      "actual_png_sha256": "bb383fb9c388b623448f8ba7931afa6ded9ccd20652beeaa6fa92ebf829b9ed4",
+      "reference": "testdata/oracle_kb_world4300_rgb.png",
+      "reference_png_sha256": "289dc490022f24c145532bc6125d6f26a33972cd3bc17ffbd07aff08e70d164c",
+      "dimensions": [
+        320,
+        224
+      ],
+      "changed_pixels": 0
+    }
+  ]
+}

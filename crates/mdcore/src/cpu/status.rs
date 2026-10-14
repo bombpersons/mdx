@@ -35,7 +35,7 @@ pub const INTERRUPT_MASK: u16 = 0x0700;
 pub const SUPERVISOR: u16 = 0x2000;
 pub const TRACE: u16 = 0x8000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct StatusRegister(pub u16);
 
 impl StatusRegister {

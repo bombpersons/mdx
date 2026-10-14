@@ -210,6 +210,8 @@ pub struct Cartridge {
     pub data: Vec<u8>,
     pub sha256: String,
     pub header: SegaHeader,
+    /// Mirror period of the cartridge window (see `mirror_period`).
+    period: usize,
 }
 
 impl Cartridge {
@@ -231,12 +233,42 @@ impl Cartridge {
             path: path.clone(),
             source,
         })?;
+        // GPGX md_cart_init: pad to the next power of two from 64 KiB with
+        // FF; Sonic & Knuckles leaves $200000-$3FFFFF to a locked-on cart.
+        let international = data.get(0x150..0x180).unwrap_or(&[]);
+        let period = if international.windows(16).any(|w| w == b"SONIC & KNUCKLES") {
+            data.len().max(0x40_0000).next_power_of_two()
+        } else {
+            data.len().max(0x1_0000).next_power_of_two()
+        };
         Ok(Self {
             path,
             data,
             sha256,
             header,
+            period,
         })
+    }
+
+    /// Default linear ROM mapping. Mirror at the modeled power-of-two period;
+    /// an undumped tail is FF, rather than another copy of the file's beginning.
+    /// Mapper-specific cartridge hardware is outside this mapping helper.
+    /// Byte at a ROM offset (which bank mappers can place beyond 4 MiB),
+    /// mirrored at the power-of-two period with an FF tail.
+    pub fn offset_byte(&self, offset: u32) -> u8 {
+        let offset = offset as usize % self.mirror_period();
+        self.data.get(offset).copied().unwrap_or(0xff)
+    }
+
+    /// Power-of-two image period (minimum 64 KiB, 4 MiB for Sonic & Knuckles)
+    /// used for mirroring; bytes past the image are FF.
+    pub fn mirror_period(&self) -> usize {
+        self.period
+    }
+
+    pub fn mapped_byte(&self, address: u32) -> u8 {
+        let offset = crate::memmap::fold_to_cart(address) as usize % self.period;
+        self.data.get(offset).copied().unwrap_or(0xff)
     }
 
     /// True when the image length is an exact power of two, which is the norm

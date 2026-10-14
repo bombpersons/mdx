@@ -1,0 +1,94 @@
+{
+  "schema": "mdx.readiness.v1",
+  "binary_sha256": "a48cc9ff92e8f1ec5913a90aad0b4a66001769087835136c7d142d1ad52bd865",
+  "release_tests": {
+    "passed": 122,
+    "failed": 0,
+    "ignored": 16
+  },
+  "pixel_gates": {
+    "passed": 7,
+    "failed": 0
+  },
+  "observer_python_tests": {
+    "passed": 3
+  },
+  "mcp_tool_names": [
+    "artifact_import",
+    "artifact_read",
+    "artifact_view",
+    "memory_read",
+    "memory_search",
+    "memory_diff",
+    "survey",
+    "trace",
+    "watch",
+    "header",
+    "disasm",
+    "boot",
+    "ram_dump",
+    "cpu_conformance",
+    "render",
+    "graphics",
+    "schema"
+  ],
+  "cartridge_smoke": [
+    {
+      "rom": "rom/original/kings_bounty.md",
+      "id": "sha256:5fd1494a6a47e33d85b22ebbc26a1156f31bb539cf54d4e109e1bcbddef8b4eb",
+      "entry": 512,
+      "boot_exit": "ok",
+      "termination": "frame_target",
+      "frames": 1,
+      "steps": 11667,
+      "exceptions": []
+    },
+    {
+      "rom": "rom/original/Cadash (USA, Korea).md",
+      "id": "sha256:85e0782411cf50ea92a9982dac1942679f738d46a58fdda5d7d82b943512afd8",
+      "entry": 522,
+      "boot_exit": "ok",
+      "termination": "frame_target",
+      "frames": 1,
+      "steps": 11667,
+      "exceptions": []
+    },
+    {
+      "rom": "rom/original/ewj/Earthworm Jim (USA).md",
+      "id": "sha256:0fc7b0da6c42fe3b7e942607dae48f6344973127e6e51f2c6ca040d6c7e24044",
+      "entry": 534,
+      "boot_exit": "ok",
+      "termination": "frame_target",
+      "frames": 1,
+      "steps": 11667,
+      "exceptions": []
+    },
+    {
+      "rom": "rom/original/hokuto/Hokuto no Ken - Shin Seikimatsu Kyuuseishu Densetsu (Japan).md",
+      "id": "sha256:3318f7dde3fa54c69b3144a00abe7501c42277609dc0743566f246428180f4a1",
+      "entry": 512,
+      "boot_exit": "ok",
+      "termination": "frame_target",
+      "frames": 1,
+      "steps": 15999,
+      "exceptions": []
+    }
+  ],
+  "walking": {
+    "screenshot": "docs/screenshots/mcp-walk4500.png",
+    "sha256": "5640528c18fac5c73e3107228f333bb2faedfe6b1683665d8a870c3d684693e4",
+    "oracle_changed_pixels": 0,
+    "phase_hex": "00",
+    "watch_observed": 25,
+    "watch_omitted": 0
+  },
+  "full_protocol_report": {
+    "path": ".mdx/artifacts/mcp-smoke/report.json",
+    "sha256": "91e3583b9fce5edfe17fac433c24a761b5aef61ee21d9cc7f2e282af74f68391"
+  },
+  "opencode_connection": "mdx connected; verified with opencode mcp list",
+  "limits": [
+    "cross-cartridge smoke covers frame 1 only",
+    "finite pixel gates are not whole-game or cycle-equivalence proof"
+  ]
+}

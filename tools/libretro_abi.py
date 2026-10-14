@@ -1,6 +1,9 @@
 """Execution-free ctypes declarations copied from libretro's public C ABI."""
 import ctypes
 
+AudioSample = ctypes.CFUNCTYPE(None, ctypes.c_int16, ctypes.c_int16)
+AudioSampleBatch = ctypes.CFUNCTYPE(ctypes.c_size_t, ctypes.POINTER(ctypes.c_int16), ctypes.c_size_t)
+
 
 class GameInfo(ctypes.Structure):
     _fields_ = [("path", ctypes.c_char_p), ("data", ctypes.c_void_p),

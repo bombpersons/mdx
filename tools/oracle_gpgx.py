@@ -9,7 +9,7 @@ Loadable through ctypes rather than a frontend: there is no SDL here, and no
 window is needed to answer the question.
 """
 import ctypes, sys, zlib, pathlib, json, os
-from libretro_abi import GameInfo, AvInfo, Variable
+from libretro_abi import GameInfo, AvInfo, Variable, AudioSample, AudioSampleBatch
 
 def _find_core():
     """Locate the libretro core.
@@ -58,7 +58,8 @@ ENV = ctypes.CFUNCTYPE(ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p)
 VID = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_uint,
                        ctypes.c_uint, ctypes.c_size_t)
 SNAPSHOT = ctypes.CFUNCTYPE(None)
-AUD = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_size_t)
+AUD = AudioSampleBatch
+AUD_SINGLE = AudioSample
 INPUT_POLL = ctypes.CFUNCTYPE(None)
 INPUT = ctypes.CFUNCTYPE(ctypes.c_int16, ctypes.c_uint, ctypes.c_uint, ctypes.c_uint, ctypes.c_uint)
 TIME = ctypes.CFUNCTYPE(ctypes.c_uint64)
@@ -91,13 +92,26 @@ def vid_cb(data, width, height, pitch):
     frames.append((width, height, pitch, raw))
 
 def snap_cb(): frames.append(None)
-def aud_cb(data, size): pass
-pressed_buttons = [set(), set()]
+audio_capture = None
+audio_error = None
+def aud_cb(data, size):
+    global audio_error
+    if audio_capture is not None and data:
+        try: audio_capture.batch(data, size)
+        except Exception as error: audio_error = error
+    return size
+
+def aud_single_cb(left, right):
+    global audio_error
+    if audio_capture is not None:
+        try: audio_capture.single(left, right)
+        except Exception as error: audio_error = error
+pressed_buttons = [set(), set(), set(), set()]
 LIBRETRO_BUTTONS = {0: "b", 1: "a", 3: "start", 4: "up", 5: "down", 6: "left", 7: "right", 8: "c"}
 
 
 def input_cb(port, device, index, button):
-    if port >= 2 or device & 0xff != 1 or index != 0:
+    if port >= 4 or device & 0xff != 1 or index != 0:
         return 0
     if button == 256:  # RETRO_DEVICE_ID_JOYPAD_MASK
         return sum(1 << k for k, v in LIBRETRO_BUTTONS.items() if v in pressed_buttons[port])
@@ -109,8 +123,11 @@ def time_cb(): return 0
 
 env = ENV(env_cb); vid = VID(vid_cb); snap = SNAPSHOT(snap_cb)
 aud = AUD(aud_cb); inp = INPUT(input_cb); poll = INPUT_POLL(poll_cb); tick = TIME(time_cb)
+aud_single = AUD_SINGLE(aud_single_cb)
 
-def run(rom_path, frames_wanted, input_events=None):
+def run(rom_path, frames_wanted, input_events=None, capture=None):
+    global audio_capture, audio_error
+    audio_capture, audio_error = capture, None
     input_events = input_events or []
     for port in pressed_buttons:
         port.clear()
@@ -118,7 +135,7 @@ def run(rom_path, frames_wanted, input_events=None):
     LIB.retro_set_environment.restype = ctypes.c_void_p
     LIB.retro_set_environment(ctypes.cast(env, ctypes.c_void_p))
     LIB.retro_set_video_refresh(ctypes.cast(vid, ctypes.c_void_p))
-    LIB.retro_set_audio_sample(ctypes.cast(aud, ctypes.c_void_p))
+    LIB.retro_set_audio_sample(ctypes.cast(aud_single, ctypes.c_void_p))
     LIB.retro_set_audio_sample_batch(ctypes.cast(aud, ctypes.c_void_p))
     LIB.retro_set_input_poll(ctypes.cast(poll, ctypes.c_void_p))
     LIB.retro_set_input_state(ctypes.cast(inp, ctypes.c_void_p))
@@ -128,10 +145,22 @@ def run(rom_path, frames_wanted, input_events=None):
     LIB.retro_get_system_av_info(ctypes.byref(av))
     info = GameInfo(str(rom_path).encode(), None, 0, None)
     ok = LIB.retro_load_game(ctypes.byref(info))
+    if not ok:
+        raise RuntimeError('reference core refused cartridge')
+    if capture is not None:
+        LIB.retro_get_system_av_info(ctypes.byref(av))
+        capture.configure(av.timing.sample_rate)
     print(json.dumps({"load_game_returned": ok,
                       "av_base": [av.geometry.base_width, av.geometry.base_height,
                                   av.geometry.max_width, av.geometry.max_height]}))
+    observer_frame=getattr(LIB,"retro_mdx_trace_set_frame",None)
+    if os.environ.get("MDX_ORACLE_TRACE_TIMING") and observer_frame is None:
+        raise RuntimeError("timing sidecar requires an oracle exporting retro_mdx_trace_set_frame")
+    if observer_frame is not None:
+        observer_frame.argtypes=[ctypes.c_uint];observer_frame.restype=None
     for n in range(1, frames_wanted + 1):
+        if capture is not None: capture.begin_frame(n - 1)
+        if observer_frame is not None:observer_frame(n-1)
         while next_event < len(input_events) and input_events[next_event]["frame"] <= n - 1:
             event = input_events[next_event]
             pressed_buttons[event.get("port", 0)] = set(event["buttons"])
@@ -145,6 +174,8 @@ def run(rom_path, frames_wanted, input_events=None):
                 samples.append({"frame": n, "w": w, "h": h, **d})
                 if n == frames_wanted:
                     last = frames[-1]
+    if audio_error is not None:
+        raise RuntimeError('reference audio capture failed') from audio_error
     return last
 
 class CpuCoreInfo(ctypes.Structure):
@@ -314,7 +345,11 @@ if __name__ == "__main__":
                     help="also report the 68k register file at the final frame")
     ap.add_argument("--ram", default=None,
                     help="also dump the core's 64 KiB of 68k work RAM here")
+    ap.add_argument("--region", choices=["auto", "ntsc-u", "pal", "ntsc-j"], default="auto",
+                    help="core region option; auto leaves the core's header detection unchanged")
     a = ap.parse_args()
+    if a.region != "auto":
+        variables["genesis_plus_gx_region_detect"] = a.region
     rom = pathlib.Path(a.rom)
     out = pathlib.Path(a.out)
     events = []
@@ -327,7 +362,7 @@ if __name__ == "__main__":
         ports = set()
         for event in events:
             frame, port = event["frame"], event.get("port", 0)
-            if set(event) - {"frame", "port", "buttons"} or type(frame) is not int or frame < 0 or frame < previous or type(port) is not int or port not in (0, 1):
+            if set(event) - {"frame", "port", "buttons"} or type(frame) is not int or frame < 0 or frame < previous or type(port) is not int or port not in (0, 1, 2, 3):
                 raise SystemExit("invalid or unordered input event")
             if frame != previous: ports.clear()
             if port in ports or not set(event["buttons"]) <= set(LIBRETRO_BUTTONS.values()):

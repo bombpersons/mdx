@@ -54,7 +54,27 @@ pub trait Z80Bus {
     }
 }
 
-#[derive(Clone, Copy)]
+/// T-states an instruction has consumed when its memory accesses happen in
+/// the reference core (MAME-derived: the opcode table cost is charged before
+/// the handler runs). Taken from this core's cost of the same bytes with
+/// neutral registers (BC=1, so block repeats and DJNZ are not taken).
+pub fn instruction_states(bytes: [u8; 4]) -> u32 {
+    struct Scratch([u8; 8]);
+    impl Z80Bus for Scratch {
+        fn read(&mut self, addr: u16) -> u8 {
+            self.0.get(addr as usize).copied().unwrap_or(0)
+        }
+        fn write(&mut self, _addr: u16, _value: u8) {}
+    }
+    let mut scratch = Scratch([0; 8]);
+    scratch.0[..4].copy_from_slice(&bytes);
+    let mut cpu = Z80::new();
+    cpu.c = 1;
+    cpu.step(&mut scratch).unwrap_or(0)
+}
+
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Z80 {
     pub a: u8,
     pub f: u8,
@@ -84,8 +104,14 @@ pub struct Z80 {
     pub iff2: bool,
     /// HALT parks the CPU until an interrupt; it is not a no-op.
     pub halted: bool,
-    /// Set by an edge on the interrupt line, cleared when the CPU accepts it.
+    /// Current level of the maskable INT line; acceptance does not clear the wire.
     pub irq_pending: bool,
+    /// EI inhibits maskable interrupt acceptance until one more instruction retires.
+    #[serde(default)]
+    pub after_ei: bool,
+    /// Internal memory pointer supplying undocumented BIT memory flags.
+    #[serde(default)]
+    pub wz: u16,
     /// Total T-states retired. The Mega Drive clocks the Z80 at half the 68000
     /// rate, so this drives the YM2612's sample clock.
     pub cycles: u64,
@@ -149,23 +175,24 @@ impl Z80 {
             iff2: false,
             halted: false,
             irq_pending: false,
+            after_ei: false,
+            wz: 0,
             cycles: 0,
         }
     }
 
-    /// Power-on reset: everything undefined is zero, and the CPU starts
-    /// halted-by-reset until the 68000 releases it.
+    /// Reference-compatible warm reset: reset control state while retaining
+    /// general registers, stack and elapsed clocks. System owns the RESET wire.
     pub fn reset(&mut self) {
-        let fresh = Z80::new();
-        self.a = fresh.a;
-        self.f = fresh.f;
-        self.sp = 0xFFFF;
         self.pc = 0;
+        self.i = 0;
+        self.r = 0;
         self.im = IM_0;
         self.iff1 = false;
         self.iff2 = false;
         self.halted = false;
-        self.irq_pending = false;
+        self.after_ei = false;
+        self.wz = 0;
     }
 
     #[inline]
@@ -241,29 +268,30 @@ impl Z80 {
     #[inline]
     pub fn push(&mut self, bus: &mut impl Z80Bus, value: u16) {
         self.sp = self.sp.wrapping_sub(2);
-        bus.write(self.sp, (value >> 8) as u8);
-        bus.write(self.sp.wrapping_add(1), value as u8);
+        // The high byte is written first, but the final SP points at the low byte.
+        bus.write(self.sp.wrapping_add(1), (value >> 8) as u8);
+        bus.write(self.sp, value as u8);
     }
 
     #[inline]
     pub fn pop(&mut self, bus: &mut impl Z80Bus) -> u16 {
-        // push writes the high byte at SP, so pop reads it from SP. Reading the
-        // pair the other way round returns every 16-bit value byte-swapped,
-        // which looks like a corrupt stack rather than a stack convention.
-        let hi = bus.read(self.sp) as u16;
-        let lo = bus.read(self.sp.wrapping_add(1)) as u16;
+        let lo = bus.read(self.sp) as u16;
+        let hi = bus.read(self.sp.wrapping_add(1)) as u16;
         self.sp = self.sp.wrapping_add(2);
         (hi << 8) | lo
     }
 
-    /// Fetch the byte at PC and advance. R increments on every opcode fetch, so
-    /// it happens here rather than at the dispatch site - that is what makes
-    /// its value differ between a taken and an untaken branch.
+    /// Fetch an immediate/displacement byte; opcode M1 reads separately update R.
     #[inline]
     fn fetch(&mut self, bus: &mut impl Z80Bus) -> u8 {
         let v = bus.read(self.pc);
         self.pc = self.pc.wrapping_add(1);
-        self.r = self.r.wrapping_add(1) & 0x7F;
+        v
+    }
+
+    fn fetch_opcode(&mut self, bus: &mut impl Z80Bus) -> u8 {
+        let v = self.fetch(bus);
+        self.r = (self.r & 0x80) | (self.r.wrapping_add(1) & 0x7f);
         v
     }
 
@@ -283,8 +311,8 @@ impl Z80 {
 
     #[inline]
     fn write_word(&self, bus: &mut impl Z80Bus, addr: u16, value: u16) {
-        bus.write(addr, (value >> 8) as u8);
-        bus.write(addr.wrapping_add(1), value as u8);
+        bus.write(addr, value as u8);
+        bus.write(addr.wrapping_add(1), (value >> 8) as u8);
     }
 }
 
@@ -297,6 +325,8 @@ pub fn parity(v: u8) -> bool {
 /// One T-state the CPU spends on an internal operation rather than the bus.
 const INTERNAL: u32 = 4;
 
+#[path = "z80/disasm.rs"]
+pub mod disasm;
 #[cfg(test)]
 #[path = "z80/tests.rs"]
 mod tests;
@@ -318,17 +348,17 @@ impl Z80 {
             0x3 => self.sub(operand, true, false),
             0x4 => {
                 self.a = a & operand;
-                self.f &= !(CF | NF);
+                self.f = HF;
                 self.set_szp(self.a);
             }
             0x5 => {
                 self.a = a ^ operand;
-                self.f &= !(CF | NF);
+                self.f = 0;
                 self.set_szp(self.a);
             }
             0x6 => {
                 self.a = a | operand;
-                self.f &= !(CF | NF);
+                self.f = 0;
                 self.set_szp(self.a);
             }
             _ => self.cmp(operand),
@@ -370,7 +400,7 @@ impl Z80 {
         self.f &= !(CF | NF);
         self.set_flag(NF, true);
         self.set_flag(HF, half);
-        self.set_flag(CF, a < operand.wrapping_add(carry_in));
+        self.set_flag(CF, u16::from(a) < u16::from(operand) + u16::from(carry_in));
         self.set_flag(PF, ((a ^ operand) & (a ^ r) & 0x80) != 0);
         if !keep {
             self.a = r;
@@ -380,6 +410,7 @@ impl Z80 {
 
     fn cmp(&mut self, operand: u8) {
         self.sub(operand, false, true);
+        self.f = (self.f & !(XF | YF)) | (operand & (XF | YF));
     }
 
     fn inc(&mut self, v: u8) -> u8 {
@@ -405,12 +436,11 @@ impl Z80 {
         r
     }
 
-    /// ADD HL,rr. Half-carry comes out of bit 11, and neither carry nor the
-    /// zero flag is touched - this is a 16-bit add on top of 8-bit flag state.
+    /// ADD HL,rr preserves S/Z/PV; X/Y come from the result's high byte.
     fn add_hl(&mut self, value: u16) {
         let hl = self.hl();
         let r = hl.wrapping_add(value);
-        self.f &= !(CF | NF | ZF | SF);
+        self.f = (self.f & (SF | ZF | PF)) | ((r >> 8) as u8 & (XF | YF));
         self.set_flag(HF, ((hl & 0x0FFF) + (value & 0x0FFF)) > 0x0FFF);
         self.set_flag(CF, r < hl);
         self.set_hl(r);
@@ -429,98 +459,39 @@ impl Z80 {
     /// The eight rotates and shifts, shared by the CB-prefixed forms and by
     /// the undocumented `ED`-prefixed duplicates.
     fn rotate(&mut self, op: u8, v: u8) -> u8 {
-        let r = match op {
-            0 => {
-                // RLC: carry out of bit 0, bit 7 in
-                let r = v.rotate_left(1);
-                self.f = (self.f & CF) | (r & (SF | XF | YF));
-                self.set_flag(CF, v & 0x80 != 0);
-                r
-            }
-            1 => {
-                // RRC
-                let r = v.rotate_right(1);
-                self.f = (self.f & CF) | (r & (SF | XF | YF));
-                self.set_flag(CF, v & 0x01 != 0);
-                r
-            }
-            2 => {
-                // RL: carry into bit 0, old carry out of bit 7
-                let carry_in = self.f & CF;
-                let r = (v << 1) | (carry_in >> 3);
-                self.f = (v & (SF | XF | YF)) | (self.f & (CF | PF));
-                self.set_flag(CF, v & 0x80 != 0);
-                self.set_szp(r);
-                r
-            }
-            3 => {
-                // RR
-                let carry_in = self.f & CF;
-                let r = (v >> 1) | (carry_in << 7);
-                self.f = (v & (SF | XF | YF)) | (self.f & (CF | PF));
-                self.set_flag(CF, v & 0x01 != 0);
-                self.set_szp(r);
-                r
-            }
-            4 => {
-                // SLA: bit 0 always cleared
-                let r = v << 1;
-                self.f = (self.f & (CF | PF)) | (r & (SF | XF | YF));
-                self.set_flag(CF, v & 0x80 != 0);
-                self.set_szp(r);
-                r
-            }
-            5 => {
-                // SRA: bit 0 always set, sign preserved
-                let r = (v >> 1) | (v & 0x80);
-                self.f = (self.f & (CF | PF)) | (r & (SF | XF | YF));
-                self.set_flag(CF, v & 0x01 != 0);
-                self.set_szp(r);
-                r
-            }
-            6 => {
-                // SLL, undocumented: like SLA but bit 0 always set
-                let r = (v << 1) | 0x01;
-                self.f = (self.f & (CF | PF)) | (r & (SF | XF | YF));
-                self.set_flag(CF, v & 0x80 != 0);
-                self.set_szp(r);
-                r
-            }
-            _ => {
-                // SRL, undocumented: bit 7 always cleared
-                let r = v >> 1;
-                self.f = (self.f & (CF | PF)) | (r & (SF | XF | YF));
-                self.set_flag(CF, v & 0x01 != 0);
-                self.set_szp(r);
-                r
-            }
+        let carry = self.f & CF;
+        let (r, c) = match op {
+            0 => (v.rotate_left(1), v >> 7),
+            1 => (v.rotate_right(1), v & 1),
+            2 => ((v << 1) | carry, v >> 7),
+            3 => ((v >> 1) | (carry << 7), v & 1),
+            4 => (v << 1, v >> 7),
+            5 => ((v >> 1) | (v & 0x80), v & 1),
+            6 => ((v << 1) | 1, v >> 7),
+            _ => (v >> 1, v & 1),
         };
+        self.f = c;
         self.set_szp(r);
         r
     }
 
     fn daa(&mut self) {
-        // Decimal adjust after a byte add or subtract, in BCD. The correction
-        // differs by operation, which is what NF means here.
-        let mut a = self.a;
-        let mut adjust = 0;
-        let mut carry = self.f & CF;
-        if (a & 0x0F) > 9 || self.f & HF != 0 {
-            adjust |= 0x06;
+        let old = self.a;
+        let mut correction = 0;
+        if old & 15 > 9 || self.flag(HF) {
+            correction |= 6;
         }
-        if a > 0x99 || self.f & CF != 0 {
-            adjust |= 0x60;
-            carry = CF;
+        let carry = self.flag(CF) || old > 0x99;
+        if carry {
+            correction |= 0x60;
         }
-        if self.f & NF != 0 {
-            a = a.wrapping_sub(adjust);
+        self.a = if self.flag(NF) {
+            old.wrapping_sub(correction)
         } else {
-            a = a.wrapping_add(adjust);
-        }
-        self.f &= !(HF | CF);
-        self.f |= carry;
-        self.a = a;
-        self.set_sz(self.a);
+            old.wrapping_add(correction)
+        };
+        self.f = (self.f & NF) | if carry { CF } else { 0 } | ((old ^ self.a) & HF);
+        self.set_szp(self.a);
     }
 }
 
@@ -542,13 +513,13 @@ impl Z80 {
             3 => self.e,
             4 => match idx {
                 Index::None => self.h,
-                Index::Ix => self.ix as u8,
-                Index::Iy => self.iy as u8,
+                Index::Ix => (self.ix >> 8) as u8,
+                Index::Iy => (self.iy >> 8) as u8,
             },
             5 => match idx {
                 Index::None => self.l,
-                Index::Ix => (self.ix >> 8) as u8,
-                Index::Iy => (self.iy >> 8) as u8,
+                Index::Ix => self.ix as u8,
+                Index::Iy => self.iy as u8,
             },
             6 => bus.read(self.ea_addr(idx)),
             _ => self.a,
@@ -645,28 +616,28 @@ impl Z80 {
     fn condition(&self, cc: u8) -> bool {
         match cc {
             0 => !self.flag(ZF),
-            1 => !self.flag(SF),
-            2 => !self.flag(PF),
-            3 => !self.flag(CF),
-            4 => self.flag(ZF),
-            5 => self.flag(SF),
-            6 => self.flag(PF),
-            _ => self.flag(CF),
+            1 => self.flag(ZF),
+            2 => !self.flag(CF),
+            3 => self.flag(CF),
+            4 => !self.flag(PF),
+            5 => self.flag(PF),
+            6 => !self.flag(SF),
+            _ => self.flag(SF),
         }
     }
 
     /// Accept a maskable interrupt if one is pending and enabled. RST 38 is the
-    /// IM 1 vector, IM 2 uses I:opaque, IM 0 is whatever is on the bus - the
-    /// latter is not a mode we can execute meaningfully, so it pushes 0xFF,
-    /// which is what a Z80 with no interrupt controller on the data bus does.
+    /// IM1 vector; IM2 fetches through I:FF. On the Mega Drive the undriven
+    /// interrupt data bus supplies FF (RST38), also defining IM0 behavior.
     fn service_interrupt(&mut self, bus: &mut impl Z80Bus) -> Option<u32> {
-        if !self.irq_pending || !self.iff1 {
+        if !self.irq_pending || !self.iff1 || self.after_ei {
             return None;
         }
         self.iff1 = false;
         self.iff2 = false;
         self.halted = false;
-        self.r = self.r.wrapping_add(1) & 0x7F;
+        self.r = (self.r & 0x80) | (self.r.wrapping_add(1) & 0x7f);
+        self.push(bus, self.pc);
         let vector = match self.im {
             IM_1 => 0x38,
             IM_2 => {
@@ -674,12 +645,11 @@ impl Z80 {
                 let addr = (page << 8) | 0xFF;
                 self.read_word(bus, addr)
             }
-            _ => 0xFF,
+            _ => 0x38,
         };
-        self.push(bus, self.pc);
         self.pc = vector;
-        self.cycles += 13;
-        Some(13)
+        self.wz = vector;
+        Some(if self.im == IM_2 { 19 } else { 13 })
     }
 }
 
@@ -694,14 +664,15 @@ impl Z80 {
         // and keeps R moving. Returning early instead would make any driver
         // that polls R during HALT drift.
         // The interrupt check comes before the HALT check. A halted CPU still
-        // accepts a masked interrupt and resumes; testing `halted` first would
+        // accepts an unmasked interrupt and resumes; testing `halted` first would
         // park the CPU forever the moment it halted with interrupts enabled.
         if let Some(n) = self.service_interrupt(bus) {
             self.cycles += n as u64;
             return Some(n);
         }
+        self.after_ei = false;
         let states = if self.halted {
-            self.r = self.r.wrapping_add(1) & 0x7F;
+            self.r = (self.r & 0x80) | (self.r.wrapping_add(1) & 0x7f);
             4
         } else {
             self.execute(bus)
@@ -711,7 +682,7 @@ impl Z80 {
     }
 
     fn execute(&mut self, bus: &mut impl Z80Bus) -> u32 {
-        let op = self.fetch(bus);
+        let op = self.fetch_opcode(bus);
         match op {
             0xCB => self.execute_cb(bus, Index::None),
             0xED => self.execute_ed(bus),
@@ -721,13 +692,34 @@ impl Z80 {
             // than bolted onto the memory operands.
             0xDD | 0xFD => {
                 let idx = if op == 0xDD { Index::Ix } else { Index::Iy };
-                let second = self.fetch(bus);
-                // A prefix directly in front of another prefix is a NOP that
-                // spans both bytes.
-                if second == 0xDD || second == 0xFD || second == 0xED {
-                    return 4;
+                let second = self.fetch_opcode(bus);
+                if second == 0xDD || second == 0xFD {
+                    self.pc = self.pc.wrapping_sub(1);
+                    self.r = (self.r & 0x80) | (self.r.wrapping_sub(1) & 0x7f);
+                    return 4 + self.execute(bus);
                 }
-                self.execute_op(bus, second, idx)
+                if second == 0xED {
+                    return 4 + self.execute_ed(bus);
+                }
+                if second == 0xCB {
+                    return self.execute_index_cb(bus, idx);
+                }
+                let states = self.execute_op(bus, second, idx);
+                let (x, y, z) = (second >> 6, (second >> 3) & 7, second & 7);
+                let memory = (x == 1 && second != 0x76 && (y == 6 || z == 6))
+                    || (x == 2 && z == 6)
+                    || (x == 0 && y == 6 && (4..=6).contains(&z));
+                states
+                    + if memory {
+                        0
+                    } else if (x == 0 && (y == 4 || y == 5) && (4..=6).contains(&z))
+                        || (x == 1 && ((y == 4 || y == 5) || (z == 4 || z == 5)))
+                        || (x == 2 && (z == 4 || z == 5))
+                    {
+                        5
+                    } else {
+                        4
+                    }
             }
             _ => self.execute_op(bus, op, Index::None),
         }
@@ -743,8 +735,8 @@ impl Z80 {
 
         match x {
             1 => {
-                // HALT is 0x76; under a prefix it is not an opcode at all.
-                if op == 0x76 && !prefixed {
+                // HALT keeps its meaning after an ignored index prefix.
+                if op == 0x76 {
                     self.halted = true;
                     return 4;
                 }
@@ -753,6 +745,7 @@ impl Z80 {
                     if prefixed {
                         let d = self.fetch(bus) as i8;
                         let addr = self.ea_addr(idx).wrapping_add(d as i16 as u16);
+                        self.wz = addr;
                         let v = bus.read(addr);
                         self.set_reg(bus, Index::None, y, v);
                         return 19;
@@ -761,21 +754,38 @@ impl Z80 {
                     self.set_reg(bus, Index::None, y, v);
                     return 7;
                 }
+                if y == 6 && prefixed {
+                    let d = self.fetch(bus) as i8;
+                    let addr = self.ea_addr(idx).wrapping_add(d as i16 as u16);
+                    self.wz = addr;
+                    let v = self.get_reg(bus, Index::None, z);
+                    bus.write(addr, v);
+                    return 19;
+                }
                 let v = self.get_reg(bus, idx, z);
                 self.set_reg(bus, idx, y, v);
-                4
+                if y == 6 {
+                    7
+                } else {
+                    4
+                }
             }
             2 => {
                 if z == 6 && prefixed {
                     let d = self.fetch(bus) as i8;
                     let addr = self.ea_addr(idx).wrapping_add(d as i16 as u16);
+                    self.wz = addr;
                     let v = bus.read(addr);
                     self.alu(y, v);
                     return 19;
                 }
                 let v = self.get_reg(bus, idx, z);
                 self.alu(y, v);
-                4
+                if z == 6 {
+                    7
+                } else {
+                    4
+                }
             }
             0 => self.group_0(bus, op, y, z, p, q, idx),
             _ => self.group_3(bus, op, y, z, p, q, idx),
@@ -805,6 +815,7 @@ impl Z80 {
                     self.b = self.b.wrapping_sub(1);
                     if self.b != 0 {
                         self.pc = self.pc.wrapping_add(d as i16 as u16);
+                        self.wz = self.pc;
                         13
                     } else {
                         8
@@ -814,6 +825,7 @@ impl Z80 {
                     let d = self.fetch(bus) as i8;
                     if y == 3 || self.condition(y - 4) {
                         self.pc = self.pc.wrapping_add(d as i16 as u16);
+                        self.wz = self.pc;
                         12
                     } else {
                         7
@@ -827,7 +839,13 @@ impl Z80 {
                     10
                 } else {
                     let v = self.get_pair(p, idx);
+                    let original = self.hl();
+                    self.wz = self.get_pair(2, idx).wrapping_add(1);
+                    self.set_hl(self.get_pair(2, idx));
                     self.add_hl(v);
+                    let result = self.hl();
+                    self.set_hl(original);
+                    self.set_pair(2, idx, result);
                     11
                 }
             }
@@ -835,41 +853,48 @@ impl Z80 {
                 (0, 0) => {
                     let a = self.a;
                     bus.write(self.bc(), a);
+                    self.wz = (self.bc().wrapping_add(1) & 0xFF) | (u16::from(a) << 8);
                     7
                 }
                 (1, 0) => {
                     let a = self.a;
                     bus.write(self.de(), a);
+                    self.wz = (self.de().wrapping_add(1) & 0xFF) | (u16::from(a) << 8);
                     7
                 }
                 (2, 0) | (3, 0) => {
                     let addr = self.fetch_word(bus);
-                    let v = if p == 2 {
-                        self.get_pair(2, idx)
+                    if p == 2 {
+                        self.write_word(bus, addr, self.get_pair(2, idx));
+                        self.wz = addr.wrapping_add(1);
+                        16
                     } else {
-                        self.a as u16
-                    };
-                    bus.write(addr, (v >> 8) as u8);
-                    bus.write(addr.wrapping_add(1), v as u8);
-                    16
+                        bus.write(addr, self.a);
+                        self.wz = (addr.wrapping_add(1) & 0xFF) | (u16::from(self.a) << 8);
+                        13
+                    }
                 }
                 (0, 1) => {
                     self.a = bus.read(self.bc());
+                    self.wz = self.bc().wrapping_add(1);
                     7
                 }
                 (1, 1) => {
                     self.a = bus.read(self.de());
+                    self.wz = self.de().wrapping_add(1);
                     7
                 }
                 (2, 1) | (3, 1) => {
                     let addr = self.fetch_word(bus);
-                    let v = self.read_word(bus, addr);
+                    self.wz = addr.wrapping_add(1);
                     if p == 2 {
+                        let v = self.read_word(bus, addr);
                         self.set_pair(2, idx, v);
+                        16
                     } else {
-                        self.a = v as u8;
+                        self.a = bus.read(addr);
+                        13
                     }
-                    16
                 }
                 _ => 4,
             },
@@ -889,6 +914,7 @@ impl Z80 {
                 if y == 6 && idx != Index::None {
                     let d = self.fetch(bus) as i8;
                     let addr = self.ea_addr(idx).wrapping_add(d as i16 as u16);
+                    self.wz = addr;
                     let v = bus.read(addr);
                     let r = if z == 4 { self.inc(v) } else { self.dec(v) };
                     bus.write(addr, r);
@@ -897,12 +923,28 @@ impl Z80 {
                 let v = self.get_reg(bus, idx, y);
                 let r = if z == 4 { self.inc(v) } else { self.dec(v) };
                 self.set_reg(bus, idx, y, r);
-                4
+                if y == 6 {
+                    11
+                } else {
+                    4
+                }
             }
             6 => {
+                if y == 6 && idx != Index::None {
+                    let d = self.fetch(bus) as i8;
+                    let v = self.fetch(bus);
+                    let addr = self.ea_addr(idx).wrapping_add(d as i16 as u16);
+                    self.wz = addr;
+                    bus.write(addr, v);
+                    return 19;
+                }
                 let v = self.fetch(bus);
                 self.set_reg(bus, idx, y, v);
-                7
+                if y == 6 {
+                    10
+                } else {
+                    7
+                }
             }
             _ => match y {
                 0 | 1 | 2 | 3 => {
@@ -919,7 +961,7 @@ impl Z80 {
                         2 => ((a << 1 | carry_in) as u8, (a >> 7) as u8),
                         _ => ((a >> 1 | carry_in << 7) as u8, (a & 1) as u8),
                     };
-                    self.f = (self.f & (SF | ZF | PF | XF | YF)) | new_carry;
+                    self.f = (self.f & (SF | ZF | PF)) | (r & (XF | YF)) | new_carry;
                     self.a = r;
                     4
                 }
@@ -929,18 +971,18 @@ impl Z80 {
                 }
                 5 => {
                     self.a = !self.a;
-                    self.f |= HF | NF;
-                    self.set_szp(self.a);
+                    self.f = (self.f & (SF | ZF | PF | CF)) | HF | NF | (self.a & (XF | YF));
                     4
                 }
                 6 => {
-                    self.f &= !(HF | NF);
-                    self.set_flag(CF, true);
+                    self.f = (self.f & (SF | ZF | PF)) | CF | ((self.f | self.a) & (XF | YF));
                     4
                 }
                 _ => {
-                    self.f &= !(HF | NF);
-                    self.set_flag(CF, !self.flag(CF));
+                    let carry = self.flag(CF);
+                    self.f = (self.f & (SF | ZF | PF))
+                        | ((self.f | self.a) & (XF | YF))
+                        | if carry { HF } else { CF };
                     4
                 }
             },
@@ -961,6 +1003,7 @@ impl Z80 {
             0 => {
                 if self.condition(y) {
                     self.pc = self.pop(bus);
+                    self.wz = self.pc;
                     11
                 } else {
                     5
@@ -973,23 +1016,24 @@ impl Z80 {
                         0 => self.set_bc(v),
                         1 => self.set_de(v),
                         2 => self.set_pair(2, idx, v),
-                        _ => self.a = v as u8,
+                        _ => self.set_af(v),
                     }
                     10
                 } else {
                     match p {
                         0 => {
                             self.pc = self.pop(bus);
+                            self.wz = self.pc;
                             10
                         }
                         1 => {
-                            let (bc_, de_, hl_) = (self.bc_, self.de_, self.hl_);
-                            self.set_bc(self.bc());
-                            self.set_de(self.de());
-                            self.set_hl(self.hl());
-                            self.bc_ = bc_;
-                            self.de_ = de_;
-                            self.hl_ = hl_;
+                            let (bc, de, hl) = (self.bc(), self.de(), self.hl());
+                            self.set_bc(self.bc_);
+                            self.set_de(self.de_);
+                            self.set_hl(self.hl_);
+                            self.bc_ = bc;
+                            self.de_ = de;
+                            self.hl_ = hl;
                             4
                         }
                         2 => {
@@ -1005,6 +1049,7 @@ impl Z80 {
             }
             2 => {
                 let addr = self.fetch_word(bus);
+                self.wz = addr;
                 if self.condition(y) {
                     self.pc = addr;
                 }
@@ -1013,16 +1058,19 @@ impl Z80 {
             3 => match y {
                 0 => {
                     self.pc = self.fetch_word(bus);
+                    self.wz = self.pc;
                     10
                 }
                 2 => {
                     let port = self.fetch(bus) as u16;
                     let a = self.a;
                     bus.port_out(port, a);
+                    self.wz = (port.wrapping_add(1) & 0xFF) | (u16::from(a) << 8);
                     11
                 }
                 3 => {
                     let port = self.fetch(bus) as u16;
+                    self.wz = ((u16::from(self.a) << 8) | port).wrapping_add(1);
                     self.a = bus.port_in(port);
                     11
                 }
@@ -1037,6 +1085,7 @@ impl Z80 {
                     self.set_pair(2, idx, v);
                     bus.write(self.sp, lo);
                     bus.write(self.sp.wrapping_add(1), hi);
+                    self.wz = v;
                     19
                 }
                 5 => {
@@ -1053,11 +1102,13 @@ impl Z80 {
                 _ => {
                     self.iff1 = true;
                     self.iff2 = true;
+                    self.after_ei = true;
                     4
                 }
             },
             4 => {
                 let addr = self.fetch_word(bus);
+                self.wz = addr;
                 if self.condition(y) {
                     self.push(bus, self.pc);
                     self.pc = addr;
@@ -1078,6 +1129,7 @@ impl Z80 {
                     11
                 } else if p == 0 {
                     let addr = self.fetch_word(bus);
+                    self.wz = addr;
                     self.push(bus, self.pc);
                     self.pc = addr;
                     17
@@ -1093,6 +1145,7 @@ impl Z80 {
             _ => {
                 self.push(bus, self.pc);
                 self.pc = (y as u16) * 8;
+                self.wz = self.pc;
                 11
             }
         }
@@ -1100,73 +1153,73 @@ impl Z80 {
 
     /// CB prefix: the bit operations and rotates, all of which operate on a
     /// single byte addressed by operand y.
-    fn execute_cb(&mut self, bus: &mut impl Z80Bus, idx: Index) -> u32 {
-        let op = self.fetch(bus);
+    fn bit(&mut self, bit: u8, value: u8, xy: u8) {
+        let clear = value & (1 << bit) == 0;
+        self.f = (self.f & CF)
+            | HF
+            | (xy & (XF | YF))
+            | if clear {
+                ZF | PF
+            } else if bit == 7 {
+                SF
+            } else {
+                0
+            };
+    }
+
+    fn execute_cb(&mut self, bus: &mut impl Z80Bus, _idx: Index) -> u32 {
+        let op = self.fetch_opcode(bus);
         let x = op >> 6;
         let y = (op >> 3) & 7;
         let z = op & 7;
-
-        // In the CB page the operand and the opcode fields swap places between
-        // the rotate group and the bit-op groups: for BIT/RES/SET the *bit
-        // number* is in bits 5-3 and the *register* in bits 2-0, whereas for
-        // the rotates it is the other way round. CB 7E is BIT 7,(HL) - not
-        // BIT 6,A - and reading the fields the wrong way round makes every
-        // bit operation in a driver operate on the wrong register.
-        let (bit_number, reg) = if x == 0 { (z, y) } else { (y, z) };
+        let v = self.get_reg(bus, Index::None, z);
         if x == 1 {
-            // BIT b,r - the only read-only form, and the only one that leaves
-            // the operand alone. Bit 7 of (HL) reads the byte at the address
-            // rather than the address itself, and the undocumented X/Y half of
-            // the flags comes from that value.
-            let value = self.get_reg(bus, idx, reg);
-            let bit = value & (1 << bit_number);
-            self.f &= !(CF | NF);
-            self.f |= HF;
-            if bit == 0 {
-                self.f |= ZF | PF;
-                self.f &= !(SF | XF | YF);
-            } else {
-                self.f |= SF;
-                // A clear bit means a *set* Z; leaving the previous Z in place
-                // makes BIT inherit the flags of whatever ran before it.
-                self.f &= !(ZF | PF);
-                self.f |= if value & 0x40 != 0 { XF } else { 0 };
-                self.f |= if value & 0x20 != 0 { YF } else { 0 };
-            }
-            return if reg == 6 { 12 } else { 8 };
+            self.bit(y, v, if z == 6 { (self.wz >> 8) as u8 } else { v });
+            return if z == 6 { 12 } else { 8 };
         }
-
-        // Every remaining CB form reads, transforms and writes back.
-        // Only a prefixed form has a displacement byte to consume; plain
-        // (HL) is a single byte and taking one here would desynchronise the
-        // program counter from the instruction stream for every CB opcode.
-        let (value, addr, states) = if reg == 6 {
-            let addr = self.effective(bus, idx);
-            (
-                bus.read(addr),
-                Some(addr),
-                if idx == Index::None { 11 } else { 15 },
-            )
-        } else {
-            (self.get_reg(bus, idx, reg), None, 8)
-        };
-
         let result = match x {
-            0 => self.rotate(bit_number, value),
-            2 => value & !(1 << bit_number),
-            _ => value | (1 << bit_number),
+            0 => self.rotate(y, v),
+            2 => v & !(1 << y),
+            _ => v | (1 << y),
         };
-        match addr {
-            Some(a) => bus.write(a, result),
-            None => self.set_reg(bus, idx, reg, result),
+        self.set_reg(bus, Index::None, z, result);
+        if z == 6 {
+            15
+        } else {
+            8
         }
-        states
+    }
+
+    fn execute_index_cb(&mut self, bus: &mut impl Z80Bus, idx: Index) -> u32 {
+        let d = self.fetch(bus) as i8;
+        let op = self.fetch(bus);
+        let addr = self.ea_addr(idx).wrapping_add(d as i16 as u16);
+        self.wz = addr;
+        self.wz = addr;
+        let v = bus.read(addr);
+        let x = op >> 6;
+        let y = (op >> 3) & 7;
+        let z = op & 7;
+        if x == 1 {
+            self.bit(y, v, (addr >> 8) as u8);
+            return 20;
+        }
+        let result = match x {
+            0 => self.rotate(y, v),
+            2 => v & !(1 << y),
+            _ => v | (1 << y),
+        };
+        bus.write(addr, result);
+        if z != 6 {
+            self.set_reg(bus, Index::None, z, result);
+        }
+        23
     }
 
     /// ED prefix: 16-bit arithmetic, block moves, and the block I/O the sound
     /// drivers lean on for the YM2612 and PSG.
     fn execute_ed(&mut self, bus: &mut impl Z80Bus) -> u32 {
-        let op = self.fetch(bus);
+        let op = self.fetch_opcode(bus);
         let x = op >> 6;
         let y = (op >> 3) & 7;
         let z = op & 7;
@@ -1174,59 +1227,57 @@ impl Z80 {
         let q = y & 1;
 
         if x == 1 {
-            if z <= 3 && y >= 4 {
-                // IN r,(C) - the port address is BC whatever the destination,
-                // and B is the only register that takes the full byte.
-                let v = bus.port_in(self.bc());
-                match y {
-                    4 => self.b = v,
-                    5 => self.c = v,
-                    6 => self.halted = true, // IN (C) is a NOP except for its
-                    _ => self.a = v,         // interrupt-triggering side effect
+            match z {
+                0 => {
+                    let v = bus.port_in(self.bc());
+                    if y == 7 {
+                        self.wz = self.bc().wrapping_add(1);
+                    }
+                    if y != 6 {
+                        self.set_reg(bus, Index::None, y, v);
+                    }
+                    self.f &= CF;
+                    self.set_szp(v);
+                    return 12;
                 }
-                self.set_sz(v);
-                self.f &= !NF;
-                return 12;
-            }
-            if z <= 3 && y < 4 {
-                // OUT (C),r
-                let v = match y {
-                    0 => self.b,
-                    1 => self.c,
-                    2 => self.d,
-                    _ => self.e,
-                };
-                bus.port_out(self.bc(), v);
-                return 12;
-            }
-            // SBC HL,rp (z = 4) and ADC HL,rp (z = 5). These live in the same
-            // x = 1 space as the block instructions' siblings, so they are
-            // selected by z here rather than by a wider pattern.
-            if z == 4 || z == 5 {
-                let v = self.get_pair(p, Index::None);
-                if z == 4 {
-                    self.sbc_hl(v);
-                } else {
-                    self.adc_hl(v);
+                1 => {
+                    let v = if y == 6 {
+                        0
+                    } else {
+                        self.get_reg(bus, Index::None, y)
+                    };
+                    bus.port_out(self.bc(), v);
+                    if y == 7 {
+                        self.wz = self.bc().wrapping_add(1);
+                    }
+                    return 12;
                 }
-                return 15;
+                2 => {
+                    let v = self.get_pair(p, Index::None);
+                    self.wz = self.hl().wrapping_add(1);
+                    if q == 0 {
+                        self.sbc_hl(v);
+                    } else {
+                        self.adc_hl(v);
+                    }
+                    return 15;
+                }
+                3 => {
+                    let addr = self.fetch_word(bus);
+                    if q == 0 {
+                        self.write_word(bus, addr, self.get_pair(p, Index::None));
+                    } else {
+                        let v = self.read_word(bus, addr);
+                        self.set_pair(p, Index::None, v);
+                    }
+                    self.wz = addr.wrapping_add(1);
+                    return 20;
+                }
+                _ => {}
             }
         }
 
         match op {
-            0x43 | 0x53 | 0x63 | 0x73 => {
-                let addr = self.fetch_word(bus);
-                let v = self.get_pair(z, Index::None);
-                bus.write(addr, (v >> 8) as u8);
-                bus.write(addr.wrapping_add(1), v as u8);
-                return 20;
-            }
-            0x4B | 0x5B | 0x6B | 0x7B => {
-                let addr = self.fetch_word(bus);
-                let v = self.read_word(bus, addr);
-                self.set_pair(z, Index::None, v);
-                return 20;
-            }
             0x44 | 0x4C | 0x54 | 0x5C | 0x64 | 0x6C | 0x74 | 0x7C => {
                 // NEG
                 let v = self.a;
@@ -1234,9 +1285,10 @@ impl Z80 {
                 self.sub(v, false, false);
                 return 8;
             }
-            0x45 | 0x55 | 0x65 | 0x75 | 0x5D | 0x6D | 0x7D => {
+            0x45 | 0x4D | 0x55 | 0x65 | 0x75 | 0x5D | 0x6D | 0x7D => {
                 // RETN / RETI
                 self.pc = self.pop(bus);
+                self.wz = self.pc;
                 self.iff1 = self.iff2;
                 return 14;
             }
@@ -1263,11 +1315,33 @@ impl Z80 {
             }
             0x57 => {
                 self.a = self.i;
+                self.f &= CF;
+                self.set_sz(self.a);
+                self.set_flag(PF, self.iff2);
                 return 9;
             }
             0x5F => {
                 self.a = self.r;
+                self.f &= CF;
+                self.set_sz(self.a);
+                self.set_flag(PF, self.iff2);
                 return 9;
+            }
+            0x67 | 0x6F => {
+                let addr = self.hl();
+                let v = bus.read(addr);
+                let low = self.a & 15;
+                let (memory, a) = if op == 0x67 {
+                    ((low << 4) | (v >> 4), (self.a & 0xf0) | (v & 15))
+                } else {
+                    ((v << 4) | low, (self.a & 0xf0) | (v >> 4))
+                };
+                bus.write(addr, memory);
+                self.a = a;
+                self.f &= CF;
+                self.set_szp(a);
+                self.wz = addr.wrapping_add(1);
+                return 18;
             }
             0xA0 | 0xA8 | 0xB0 | 0xB8 => {
                 // LDI/LDD/LDIR/LDDR. Bit 3 selects the direction and bit 4
@@ -1291,20 +1365,19 @@ impl Z80 {
                 });
                 let bc = self.bc().wrapping_sub(1);
                 self.set_bc(bc);
-                let n = (v.wrapping_add(self.a)) & 0x02 != 0;
+                let sum = v.wrapping_add(self.a);
                 self.f &= !(PF | NF | HF);
                 if bc != 0 {
                     self.set_flag(PF, true);
                 }
-                self.set_flag(YF, (v >> 3) & 1 != 0);
-                self.set_flag(XF, (v >> 1) & 1 != 0);
-                self.set_flag(NF, n);
+                self.f = (self.f & !(XF | YF)) | (sum & XF) | ((sum & 2) << 4);
                 // A repeating block step leaves the program counter on the
                 // instruction itself so the next fetch re-enters it. Without
                 // stepping back over both prefix bytes the block runs exactly
                 // once and the copy silently stops after one byte.
                 return if repeat && bc != 0 {
                     self.pc = self.pc.wrapping_sub(2);
+                    self.wz = self.pc.wrapping_add(1);
                     21
                 } else {
                     16
@@ -1319,14 +1392,15 @@ impl Z80 {
                 let v = bus.read(hl);
                 let r = a.wrapping_sub(v);
                 let half = (a & 0x0F).wrapping_sub(v & 0x0F) > 0x0F;
-                self.f &= !(PF | NF | HF | CF);
-                self.set_flag(NF, true);
-                self.set_flag(HF, half);
-                self.set_flag(CF, a < v);
-                self.set_flag(PF, ((a ^ v) & (a ^ r) & 0x80) != 0);
-                self.set_szp(r);
                 let bc = self.bc().wrapping_sub(1);
                 self.set_bc(bc);
+                self.wz = if forward { self.wz.wrapping_add(1) } else { self.wz.wrapping_sub(1) };
+                let adjusted = r.wrapping_sub(u8::from(half));
+                self.f = (self.f & CF) | NF | if half { HF } else { 0 };
+                self.set_flag(SF, r & 0x80 != 0);
+                self.set_flag(ZF, r == 0);
+                self.set_flag(PF, bc != 0);
+                self.f |= (adjusted & XF) | ((adjusted & 2) << 4);
                 self.set_hl(if forward {
                     hl.wrapping_add(1)
                 } else {
@@ -1334,28 +1408,40 @@ impl Z80 {
                 });
                 return if repeat && bc != 0 && r != 0 {
                     self.pc = self.pc.wrapping_sub(2);
+                    self.wz = self.pc.wrapping_add(1);
                     21
                 } else {
                     16
                 };
             }
             0xA2 | 0xAA | 0xB2 | 0xBA => {
-                // INI/IND/INIR/INDR
-                let forward = op & 0x08 == 0;
+                let forward = op & 8 == 0;
+                let repeat = op & 0x10 != 0;
                 let v = bus.port_in(self.bc());
+                self.wz = if forward { self.bc().wrapping_add(1) } else { self.bc().wrapping_sub(1) };
                 bus.write(self.hl(), v);
                 self.b = self.b.wrapping_sub(1);
                 self.set_hl(self.hl().wrapping_add(if forward { 1 } else { u16::MAX }));
-                return 16;
+                let c = self.c.wrapping_add(if forward { 1 } else { u8::MAX });
+                let sum = u16::from(v) + u16::from(c);
+                self.block_io_flags(v, sum);
+                // The reference schedules IN's bus phase with four extra T states.
+                return if repeat && self.b != 0 {
+                    self.pc = self.pc.wrapping_sub(2);
+                    25
+                } else {
+                    20
+                };
             }
             0xA3 | 0xAB | 0xB3 | 0xBB => {
-                // OUTI/OUTD/OTIR/OTDR
-                let forward = op & 0x08 == 0;
+                let forward = op & 8 == 0;
                 let repeat = op & 0x10 != 0;
                 let v = bus.read(self.hl());
-                bus.port_out(self.bc(), v);
                 self.b = self.b.wrapping_sub(1);
+                self.wz = if forward { self.bc().wrapping_add(1) } else { self.bc().wrapping_sub(1) };
+                bus.port_out(self.bc(), v);
                 self.set_hl(self.hl().wrapping_add(if forward { 1 } else { u16::MAX }));
+                self.block_io_flags(v, u16::from(v) + u16::from(self.l));
                 return if repeat && self.b != 0 {
                     self.pc = self.pc.wrapping_sub(2);
                     21
@@ -1370,17 +1456,30 @@ impl Z80 {
         8
     }
 
+    fn block_io_flags(&mut self, value: u8, sum: u16) {
+        self.f = if value & 0x80 != 0 { NF } else { 0 };
+        self.set_sz(self.b);
+        if sum > 255 {
+            self.f |= HF | CF;
+        }
+        self.set_flag(PF, ((sum as u8 & 7) ^ self.b).count_ones() % 2 == 0);
+    }
+
     fn adc_hl(&mut self, value: u16) {
         let hl = self.hl();
         let carry = if self.flag(CF) { 1u16 } else { 0 };
         let r = hl.wrapping_add(value).wrapping_add(carry);
         self.f &= !(CF | NF);
         self.set_flag(HF, (hl & 0x0FFF) + (value & 0x0FFF) + carry > 0x0FFF);
-        self.set_flag(CF, r < hl);
+        self.set_flag(
+            CF,
+            u32::from(hl) + u32::from(value) + u32::from(carry) > 65535,
+        );
         self.set_flag(PF, ((hl ^ r) & (value ^ r) & 0x8000) != 0);
         self.set_flag(NF, false);
         self.set_flag(SF, r & 0x8000 != 0);
         self.set_flag(ZF, r & 0xFFFF == 0);
+        self.f = (self.f & !(XF | YF)) | ((r >> 8) as u8 & (XF | YF));
         self.set_hl(r);
     }
 
@@ -1397,10 +1496,11 @@ impl Z80 {
                 .wrapping_sub(carry)
                 > 0x0FFF,
         );
-        self.set_flag(CF, hl < value.wrapping_add(carry));
+        self.set_flag(CF, u32::from(hl) < u32::from(value) + u32::from(carry));
         self.set_flag(PF, ((hl ^ value) & (hl ^ r) & 0x8000) != 0);
         self.set_flag(SF, r & 0x8000 != 0);
         self.set_flag(ZF, r & 0xFFFF == 0);
+        self.f = (self.f & !(XF | YF)) | ((r >> 8) as u8 & (XF | YF));
         self.set_hl(r);
     }
 }

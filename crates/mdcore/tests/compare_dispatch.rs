@@ -106,7 +106,6 @@ fn signed_divide_host_overflow_cannot_panic_the_emulator() {
 }
 
 #[test]
-#[ignore = "reference timing probe: currently approximate; requires wider scheduling verification before integration"]
 fn bit_operation_cycles_follow_register_memory_and_immediate_forms() {
     for (opcode, bit, expected_cycles, immediate, memory) in [
         (0x0300, 0, 6, false, false), // BTST D1,D0 (decompression hot path)

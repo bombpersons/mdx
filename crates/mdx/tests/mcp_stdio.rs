@@ -146,6 +146,35 @@ fn create_rom(path: &Path) {
     fs::write(path, bytes).unwrap();
 }
 
+#[test]
+fn template_creation_uses_the_explicit_client_workspace_not_server_cwd() {
+    let server_root = tempfile::tempdir().unwrap();
+    let agent_workspace = tempfile::tempdir().unwrap();
+    let directory = agent_workspace.path().join("native-game");
+    let mut rpc = Rpc::start(server_root.path(), 2);
+    let result = rpc.tool(
+        "template_create",
+        json!({"directory":directory,"name":"client-native"}),
+    );
+    assert!(result["ok"].as_bool().unwrap(), "{result}");
+    assert_eq!(result["data"]["directory"], directory.to_str().unwrap());
+    assert!(directory.join("src/dev_mcp.rs").is_file());
+    assert!(!server_root.path().join("native-game").exists());
+    let manifest = fs::read_to_string(directory.join("Cargo.toml")).unwrap();
+    assert!(manifest.contains("name = \"client-native\""));
+    assert!(manifest.contains("version = \"=0.20.0\""));
+    let collision = rpc.tool(
+        "template_create",
+        json!({"directory":directory,"name":"other"}),
+    );
+    assert_eq!(collision["error"]["code"], "template_collision");
+    assert_eq!(
+        fs::read_to_string(directory.join("Cargo.toml")).unwrap(),
+        manifest
+    );
+    rpc.close();
+}
+
 fn cli(root: &Path, name: &str, args: &Value) -> Value {
     let output = Command::new(env!("CARGO_BIN_EXE_mdx"))
         .current_dir(root)
@@ -203,6 +232,32 @@ fn advertised_schemas_and_all_operations_have_cli_mcp_parity() {
         "ram.dump",
         json!({"rom":id,"instructions":8,"range":[0xE54A,2]}),
     );
+    let alias = compare(
+        &mut rpc,
+        "ram.dump",
+        json!({"rom":id,"instructions":8,"range":["0XFFFFE54A","0x2"]}),
+    );
+    assert_eq!(alias["data"]["hex"][0]["wram_offset"], "0xE54A");
+    assert_eq!(alias["data"]["hex"][0]["bytes"], "12 34");
+    let stopped = compare(
+        &mut rpc,
+        "boot",
+        json!({"rom":id,"instructions":8,"frames":60,"stop_at":[0x200],"out":"stopped"}),
+    );
+    assert_eq!(stopped["ok"], true);
+    assert_eq!(stopped["data"]["termination"], "stop_point");
+    fs::write(
+        root.path().join("bundle.json"),
+        include_bytes!("../testdata/cpu-regressions.json"),
+    )
+    .unwrap();
+    let bundled = compare(
+        &mut rpc,
+        "cpu.conformance",
+        json!({"suite":"bundle.json","compare_cycles":true}),
+    );
+    assert_eq!(bundled["data"]["cases_passed"], 12);
+    compare(&mut rpc, "audio", json!({"rom":id,"frames":2,"instructions":100000,"save_state":true,"out":"waves"}));
     let boot = compare(
         &mut rpc,
         "boot",
@@ -255,11 +310,15 @@ fn advertised_schemas_and_all_operations_have_cli_mcp_parity() {
         "graphics",
         json!({"snapshot":"mode5.json","out":"graphics"}),
     );
-    compare(
+    let traced = compare(
         &mut rpc,
         "trace",
         json!({"rom":id,"instructions":8,"max_records":2}),
     );
+    let first = &traced["data"]["trace_preview"][0];
+    assert_eq!(first["master_cycles"], 784462);
+    assert_eq!(first["elapsed_master_cycles"], 140);
+    assert_eq!(traced["data"]["trace_preview"][1]["master_cycles"], 784602);
     compare(
         &mut rpc,
         "watch",
@@ -356,4 +415,287 @@ fn progress_cancellation_and_teardown_release_the_worker_slot() {
             "abandoned call finished its whole budget"
         );
     }
+}
+
+#[test]
+fn concurrent_project_calls_keep_inputs_outputs_and_artifact_ids_in_their_own_context() {
+    let server = tempfile::tempdir().unwrap();
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    create_rom(&server.path().join("game.md"));
+    create_rom(&a.path().join("game.md"));
+    create_rom(&b.path().join("game.md"));
+    let mut bytes = fs::read(b.path().join("game.md")).unwrap();
+    bytes[0x202..0x204].copy_from_slice(&[0x56, 0x78]);
+    fs::write(b.path().join("game.md"), bytes).unwrap();
+    fs::write(
+        a.path().join("replay.json"),
+        r#"{"events":[{"frame":0,"buttons":["right"]}]}"#,
+    )
+    .unwrap();
+    let mut rpc = Rpc::start(server.path(), 2);
+    let listed = rpc.request("tools/list", json!({}));
+    for tool in listed["result"]["tools"].as_array().unwrap() {
+        // Optional paths advertise the same simple value type as `rom`.
+        // Nullable type arrays needlessly complicate provider schema adapters.
+        for key in ["project_root", "artifact_store"] {
+            assert_eq!(tool["inputSchema"]["properties"][key]["type"], "string");
+            assert!(tool["inputSchema"]["required"]
+                .as_array()
+                .is_none_or(|fields| fields.iter().all(|field| field != key)));
+        }
+    }
+    let args_a = json!({"project_root":a.path(),"rom":"game.md","instructions":8,
+        "trace":0,"input":"replay.json","out":"captures"});
+    let args_b = json!({"project_root":b.path(),"artifact_store":"analysis/artifacts",
+        "rom":"game.md","instructions":8,"trace":0});
+    let boot_schema = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "boot")
+        .unwrap()["inputSchema"]
+        .clone();
+    let validator = jsonschema::validator_for(&boot_schema).unwrap();
+    assert!(validator.is_valid(&args_a));
+    assert!(validator.is_valid(&args_b));
+    let id_a = rpc.begin("tools/call", json!({"name":"boot","arguments":args_a}));
+    let id_b = rpc.begin("tools/call", json!({"name":"boot","arguments":args_b}));
+    let boot_a = rpc.wait(id_a)["result"]["structuredContent"].clone();
+    let boot_b = rpc.wait(id_b)["result"]["structuredContent"].clone();
+    assert_eq!(boot_a["ok"], true, "{boot_a}");
+    assert_eq!(boot_b["ok"], true, "{boot_b}");
+    assert_ne!(boot_a["subject"]["sha256"], boot_b["subject"]["sha256"]);
+    assert_eq!(boot_a["data"]["input_replay"]["final_pressed_masks"][0], 8);
+    assert!(Path::new(
+        boot_a["data"]["display"]["screenshot_path"]
+            .as_str()
+            .unwrap()
+    )
+    .starts_with(a.path().join("captures")));
+    for (boot, store) in [
+        (&boot_a, a.path().join(".mdx/artifacts")),
+        (&boot_b, b.path().join("analysis/artifacts")),
+    ] {
+        assert!(
+            Path::new(boot["data"]["snapshot_artifact"]["path"].as_str().unwrap())
+                .starts_with(&store)
+        );
+    }
+    for (root, store, boot, expected) in [
+        (a.path(), Value::Null, &boot_a, "1234"),
+        (b.path(), json!("analysis/artifacts"), &boot_b, "5678"),
+    ] {
+        let read = rpc.tool(
+            "memory_read",
+            json!({"project_root":root,"artifact_store":store,
+            "snapshot":boot["data"]["snapshot_artifact"]["id"],"memory":"wram",
+            "address":0xe54a,"length":2}),
+        );
+        assert_eq!(read["ok"], true, "{read}");
+        assert_eq!(read["data"]["bytes"], expected);
+    }
+    let wrong = rpc.tool(
+        "artifact_read",
+        json!({"project_root":b.path(),
+        "source":boot_a["data"]["snapshot_artifact"]["id"],"length":16}),
+    );
+    assert_eq!(wrong["ok"], false, "{wrong}");
+    // A new scoped call and an unscoped call retain their independent defaults.
+    let again = rpc.tool("header", json!({"project_root":a.path(),"rom":"game.md"}));
+    assert_eq!(again["subject"]["sha256"], boot_a["subject"]["sha256"]);
+    let unscoped = rpc.tool("artifact_import", json!({"path":"game.md"}));
+    assert_eq!(unscoped["ok"], true, "{unscoped}");
+    assert!(
+        Path::new(unscoped["data"]["artifact"]["path"].as_str().unwrap())
+            .starts_with(server.path().join("store"))
+    );
+    assert!(!server.path().join("captures").exists());
+    assert!(!server.path().join(".mdx").exists());
+    assert_eq!(cli(server.path(), "boot", &args_a), boot_a);
+    assert_eq!(cli(server.path(), "boot", &args_b), boot_b);
+    rpc.close();
+}
+
+#[test]
+fn project_scope_is_inherited_by_surveys_and_shared_objects_publish_concurrently() {
+    let server = tempfile::tempdir().unwrap();
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    fs::write(a.path().join("payload.txt"), b"project-a").unwrap();
+    fs::write(b.path().join("payload.txt"), b"project-b").unwrap();
+    let mut rpc = Rpc::start(server.path(), 2);
+    let batch = rpc.tool(
+        "survey",
+        json!({"project_root":a.path(),"tasks":[
+            {"id":"a","operation":"artifact.import","arguments":{"path":"payload.txt"}},
+            {"id":"b","operation":"artifact.import","arguments":{"project_root":b.path(),
+                "artifact_store":"agent-b","path":"payload.txt"}}
+        ]}),
+    );
+    assert_eq!(batch["ok"], true, "{batch}");
+    let rows = batch["data"]["results"].as_array().unwrap();
+    assert_eq!(rows[0]["response"]["ok"], true, "{batch}");
+    assert_eq!(rows[1]["response"]["ok"], true, "{batch}");
+    assert!(Path::new(
+        rows[0]["response"]["data"]["artifact"]["path"]
+            .as_str()
+            .unwrap()
+    )
+    .starts_with(a.path().join(".mdx/artifacts")));
+    assert!(Path::new(
+        rows[1]["response"]["data"]["artifact"]["path"]
+            .as_str()
+            .unwrap()
+    )
+    .starts_with(b.path().join("agent-b")));
+    let request = json!({"name":"artifact_import","arguments":{"project_root":a.path(),
+        "path":"payload.txt"}});
+    let first = rpc.begin("tools/call", request.clone());
+    let second = rpc.begin("tools/call", request);
+    let first = rpc.wait(first)["result"]["structuredContent"].clone();
+    let second = rpc.wait(second)["result"]["structuredContent"].clone();
+    assert_eq!(first["ok"], true, "{first}");
+    assert_eq!(second, first);
+    let invalid = rpc.tool(
+        "artifact_import",
+        json!({"project_root":"relative-project",
+        "path":"payload.txt"}),
+    );
+    assert_eq!(invalid["error"]["code"], "invalid_arguments");
+    assert_eq!(invalid["exit"], "usage");
+    rpc.close();
+}
+
+#[test]
+fn machine_states_resume_across_operations_cli_and_concurrent_mcp_calls() {
+    let root = tempfile::tempdir().unwrap();
+    create_rom(&root.path().join("loop.md"));
+    let mut rpc = Rpc::start(root.path(), 2);
+    let schemas = rpc.request("tools/list", json!({}));
+    for name in ["boot", "trace", "watch", "ram_dump"] {
+        let tool = schemas["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == name)
+            .unwrap();
+        assert_eq!(
+            tool["inputSchema"]["properties"]["from_state"]["type"],
+            "string"
+        );
+        assert!(!tool["inputSchema"]["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "from_state"));
+    }
+    fs::write(
+        root.path().join("held.json"),
+        r#"{"events":[{"frame":0,"port":0,"buttons":["a"]}]}"#,
+    )
+    .unwrap();
+    fs::write(
+        root.path().join("release.json"),
+        r#"{"events":[{"frame":0,"port":0,"buttons":[]}]}"#,
+    )
+    .unwrap();
+    let saved = rpc.tool("boot", json!({"rom":"loop.md","instructions":100000,"frames":2,"trace":0,"input":"held.json","save_state":true}));
+    assert_eq!(saved["ok"], true, "{saved}");
+    assert_eq!(saved["data"]["elapsed_frames"], 2);
+    let state = saved["data"]["state_artifact"]["id"].clone();
+    let saved_bytes = fs::read(saved["data"]["state_artifact"]["path"].as_str().unwrap()).unwrap();
+    let checkpoint: Value = serde_json::from_slice(&saved_bytes).unwrap();
+    assert_ne!(checkpoint["io"]["pad_buttons"][0], 0);
+    // Zero-step restore preserves every modeled field and the original artifact.
+    let ram = rpc.tool("ram_dump", json!({"rom":"loop.md","from_state":state,"instructions":0,"save_state":true,"range":[0xe54a,2]}));
+    assert_eq!(ram["ok"], true, "{ram}");
+    assert_eq!(ram["data"]["state_artifact"]["id"], state);
+    assert_eq!(ram["data"]["starting_frame"], 2);
+    assert_eq!(ram["data"]["hex"][0]["bytes"], "12 34");
+    let args = json!({"rom":"loop.md","from_state":state,"instructions":100000,"frames":1,"save_state":true,"input":"release.json","max_records":4});
+    let mut watch = args.clone();
+    watch["watch"] = json!({"address":0xe54a,"length":2});
+    let first = rpc.begin("tools/call", json!({"name":"trace","arguments":args}));
+    let second = rpc.begin("tools/call", json!({"name":"watch","arguments":watch}));
+    let traced = rpc.wait(first)["result"]["structuredContent"].clone();
+    let watched = rpc.wait(second)["result"]["structuredContent"].clone();
+    for response in [&traced, &watched] {
+        assert!(response["error"].is_null(), "{response}");
+        assert_eq!(response["data"]["starting_frame"], 2);
+        assert_eq!(response["data"]["elapsed_frames"], 1);
+        assert_eq!(response["data"]["frames"], 3);
+        assert_eq!(response["data"]["input_events_applied"], 1);
+    }
+    assert_eq!(
+        traced["data"]["state_artifact"]["id"],
+        watched["data"]["state_artifact"]["id"]
+    );
+    let resumed: Value = serde_json::from_slice(
+        &fs::read(traced["data"]["state_artifact"]["path"].as_str().unwrap()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(resumed["io"]["pad_buttons"][0], 0);
+    let boot_args = json!({"rom":"loop.md","from_state":state,"instructions":100000,"frames":1,"save_state":true,"input":"release.json","trace":0});
+    let boot = rpc.tool("boot", boot_args.clone());
+    assert_eq!(boot, cli(root.path(), "boot", &boot_args));
+    assert_eq!(
+        boot["data"]["state_artifact"]["id"],
+        traced["data"]["state_artifact"]["id"]
+    );
+    let uninterrupted = rpc.tool(
+        "boot",
+        json!({"rom":"loop.md","instructions":100000,"frames":3,"trace":0,"save_state":true}),
+    );
+    assert_eq!(
+        boot["data"]["state_artifact"]["id"],
+        uninterrupted["data"]["state_artifact"]["id"]
+    );
+    // Explicit CLI flags use the same contract, including trace/watch's JSON args.
+    for command in [
+        vec!["boot", "--rom", "loop.md", "--instructions", "0"],
+        vec!["ram", "dump", "--rom", "loop.md", "--instructions", "0"],
+        vec!["trace", "--args", r#"{"rom":"loop.md","instructions":0}"#],
+        vec![
+            "watch",
+            "--args",
+            r#"{"rom":"loop.md","instructions":0,"watch":{"address":0,"length":1}}"#,
+        ],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_mdx"))
+            .current_dir(root.path())
+            .args(["--store", "store"])
+            .args(command)
+            .args(["--from-state", state.as_str().unwrap(), "--save-state"])
+            .output()
+            .unwrap();
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(result["error"].is_null(), "{result}");
+        assert_eq!(result["data"]["state_artifact"]["id"], state);
+    }
+    assert_eq!(
+        fs::read(saved["data"]["state_artifact"]["path"].as_str().unwrap()).unwrap(),
+        saved_bytes
+    );
+    rpc.close();
+}
+
+#[test]
+fn concurrent_audio_captures_keep_console_and_output_scope_independent() {
+    let server=tempfile::tempdir().unwrap();let a=tempfile::tempdir().unwrap();let b=tempfile::tempdir().unwrap();
+    create_rom(&a.path().join("game.md"));create_rom(&b.path().join("game.md"));
+    let mut rpc=Rpc::start(server.path(),2);
+    let first=rpc.begin("tools/call",json!({"name":"audio","arguments":{"project_root":a.path(),"rom":"game.md","frames":10,"instructions":1000000,"save_state":true,"out":"waves"}}));
+    let second=rpc.begin("tools/call",json!({"name":"audio","arguments":{"project_root":b.path(),"rom":"game.md","frames":20,"instructions":1000000,"save_state":true,"out":"waves"}}));
+    let first=rpc.wait(first)["result"]["structuredContent"].clone();
+    let second=rpc.wait(second)["result"]["structuredContent"].clone();
+    for (report,root,frame) in [(&first,a.path(),10),(&second,b.path(),20)] {
+        assert_eq!(report["ok"],true,"{report}");assert_eq!(report["data"]["reached_frames"],frame);
+        for field in ["wav_artifact","state_artifact"] {
+            assert!(Path::new(report["data"][field]["path"].as_str().unwrap()).starts_with(root));
+        }
+    }
+    assert_ne!(first["data"]["wav_artifact"]["id"],second["data"]["wav_artifact"]["id"]);
+    let repeated=rpc.tool("audio",json!({"project_root":a.path(),"rom":"game.md","frames":10,"instructions":1000000,"save_state":true,"out":"waves"}));
+    assert_eq!(repeated,first);assert!(!server.path().join("store").exists());rpc.close();
 }

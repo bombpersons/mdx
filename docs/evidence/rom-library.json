@@ -1,0 +1,15 @@
+{
+  "source": "https://archive.org/details/nointro.md",
+  "complete": true,
+  "verified_archives": 2774,
+  "rom_files": 2775,
+  "rom_bytes": 3947221818,
+  "extensions": {
+    ".md": 2774,
+    ".bin": 1
+  },
+  "manifest": "rom/library/nointro-md/manifest.json",
+  "manifest_sha256": "cc0ffe6d7a6bdebdb03f9cdb9482600609a05bcec170d2f2d792f520fbad3204",
+  "metadata_sha256": "911ff263e6c14215010e94bb6cb8b17a736dc3f7d9f9273aa309124f728b1481",
+  "errors": []
+}

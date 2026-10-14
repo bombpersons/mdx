@@ -34,7 +34,8 @@ pub enum Exception {
 }
 
 /// The 68000 programmer's model state.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct M68000 {
     pub d: [u32; 8],
     pub a: [u32; 8],
@@ -50,6 +51,29 @@ pub struct M68000 {
     pub stopped: bool,
     /// Analyst-forced outcomes for conditional branches, keyed by address.
     pub branch_override: Vec<(u32, bool)>,
+    /// Variable processing/transfer clocks during which a refresh is skipped.
+    pub(crate) refresh_block_cycles: Option<u32>,
+    /// SR was written by the current instruction, requiring an IRQ recheck.
+    pub(crate) status_written: bool,
+    /// Clocks a trap-class exception (CHK, TRAPV, divide by zero) spent
+    /// before exception processing. Transient within one step.
+    #[serde(skip)]
+    pub(crate) trap_cycles: u32,
+    /// Address error raised by the current instruction (transient).
+    #[serde(skip)]
+    pub(crate) fault: Option<Fault>,
+    /// The faulting instruction's register file and opcode, for the frame.
+    #[serde(skip)]
+    pub(crate) last_fault: Option<(Fault, u16)>,
+    /// Inside address-error processing until RTE: a second fault halts.
+    #[serde(default)]
+    pub(crate) aerr_mode: bool,
+    /// Interrupt processing since the last RTE (status word I/N bit).
+    #[serde(default)]
+    pub(crate) instr_mode_no: bool,
+    /// Halted by a double fault; only reset clears it.
+    #[serde(default)]
+    pub halted: bool,
 }
 
 /// Reason a `step` ended.
@@ -75,6 +99,14 @@ impl M68000 {
             prefetch: [0, 0],
             stopped: false,
             branch_override: Vec::new(),
+            refresh_block_cycles: None,
+            status_written: false,
+            trap_cycles: 0,
+            fault: None,
+            last_fault: None,
+            aerr_mode: false,
+            instr_mode_no: false,
+            halted: false,
         }
     }
 
@@ -108,6 +140,7 @@ impl M68000 {
     #[inline]
     pub fn set_pc<B: Bus>(&mut self, bus: &mut B, addr: u32) {
         self.pc = addr & !1;
+        bus.note_pc(self.pc);
         self.prime(bus);
     }
 
@@ -122,6 +155,7 @@ impl M68000 {
         self.prefetch[0] = self.prefetch[1];
         self.prefetch[1] = bus.read16(self.pc.wrapping_add(4));
         self.pc = self.pc.wrapping_add(2);
+        bus.note_pc(self.pc);
         word
     }
 
@@ -130,6 +164,7 @@ impl M68000 {
     /// Stack the next instruction's PC followed by the old SR, so the six-byte
     /// frame starts with SR then PC. Enter supervisor mode and mask this level.
     pub fn interrupt<B: Bus>(&mut self, bus: &mut B, level: u8) {
+        self.instr_mode_no = true;
         let old_sr = self.sr.0;
         self.set_status((old_sr & !0x8700) | 0x2000 | ((level as u16) << 8));
         let sp = self.a[7];
@@ -142,8 +177,55 @@ impl M68000 {
         self.set_pc(bus, addr);
     }
 
+    /// Group-0 address error entry (reference m68ki_exception_address_error):
+    /// PC, SR, IR, access address and the R/W, I/N, FC status word, then
+    /// vector 3. A second fault before RTE halts the processor.
+    pub(crate) fn address_error_entry<B: Bus>(&mut self, bus: &mut B, fault: Fault, ir: u16) {
+        if self.aerr_mode {
+            self.halted = true;
+            self.stopped = true;
+            return;
+        }
+        self.aerr_mode = true;
+        let old_sr = self.sr.0;
+        let fc = if old_sr & 0x2000 != 0 { 5 } else { 1 };
+        self.set_status((old_sr & !0x8000) | 0x2000);
+        let status = if fault.write { 0 } else { 0x10 } | if self.instr_mode_no { 0x08 } else { 0 } | fc;
+        let mut sp = self.a[7];
+        sp = sp.wrapping_sub(4);
+        bus.write32(sp, fault.pc);
+        sp = sp.wrapping_sub(2);
+        bus.write16(sp, old_sr);
+        sp = sp.wrapping_sub(2);
+        bus.write16(sp, ir);
+        sp = sp.wrapping_sub(4);
+        bus.write32(sp, fault.address);
+        sp = sp.wrapping_sub(2);
+        bus.write16(sp, status);
+        self.a[7] = sp;
+        self.stopped = false;
+        let handler = bus.read32(3 * 4);
+        self.set_pc(bus, handler);
+    }
+
+    /// Enter a synchronous handler with the three-word 68000 exception frame.
+    /// The caller supplies the architecturally stacked fault/return PC.
+    pub(crate) fn exception_entry<B: Bus>(&mut self, bus: &mut B, vector: u8, return_pc: u32) {
+        debug_assert!((4..=47).contains(&vector));
+        let old_sr = self.sr.0;
+        self.set_status((old_sr & !0x8000) | 0x2000);
+        let sp = self.a[7];
+        bus.write32(sp.wrapping_sub(4), return_pc);
+        bus.write16(sp.wrapping_sub(6), old_sr);
+        self.a[7] = sp.wrapping_sub(6);
+        self.stopped = false;
+        let handler = bus.read32(u32::from(vector) * 4);
+        self.set_pc(bus, handler);
+    }
+
     /// Write SR's implemented bits and swap active stacks when S changes.
     pub(crate) fn set_status(&mut self, value: u16) {
+        self.status_written = true;
         let value = value & 0xA71F;
         let was_supervisor = self.sr.is_supervisor();
         let supervisor = value & 0x2000 != 0;
@@ -159,23 +241,47 @@ impl M68000 {
 
     /// Execute exactly one instruction.
     pub fn step<B: Bus>(&mut self, bus: &mut B) -> StepOutcome {
+        self.refresh_block_cycles = None;
+        self.status_written = false;
+        self.trap_cycles = 0;
         if self.stopped {
             return StepOutcome::default();
         }
         let start = self.pc;
-        match self.execute(bus) {
+        let ir = self.prefetch[0];
+        let result = self.execute(bus);
+        if let Some(f) = self.fault.take() {
+            // Abort at the faulting access: keep only what happened before it.
+            self.d = f.d;
+            self.a = f.a;
+            self.sr.0 = f.sr;
+            self.usp = f.usp;
+            self.ssp = f.ssp;
+            self.pc = f.pc;
+            self.last_fault = Some((f, ir));
+            return StepOutcome {
+                cycles: 0,
+                extension_words: 0,
+                exception: Some(Exception::AddressError { address: f.address, is_write: f.write }),
+            };
+        }
+        match result {
             Ok((cycles, ext)) => StepOutcome {
                 cycles,
                 extension_words: ext,
                 exception: None,
             },
             Err(e) => {
-                // An exception aborts the instruction; restore the queue.
-                self.pc = start;
-                self.prefetch[0] = bus.read16(start);
-                self.prefetch[1] = bus.read16(start.wrapping_add(2));
+                // Trap-class exceptions complete the instruction and stack the
+                // next PC; faults abort it and stack the instruction's own PC.
+                let trap = matches!(e, Exception::DivideByZero | Exception::Vector { .. });
+                if !trap {
+                    self.pc = start;
+                }
+                self.prefetch[0] = bus.read16(self.pc);
+                self.prefetch[1] = bus.read16(self.pc.wrapping_add(2));
                 StepOutcome {
-                    cycles: 0,
+                    cycles: if trap { self.trap_cycles } else { 0 },
                     extension_words: 0,
                     exception: Some(e),
                 }
@@ -247,7 +353,7 @@ impl M68000 {
         match ea {
             Ea::Data(r) => self.d[*r as usize] & size.mask(),
             Ea::Address(r) => self.a[*r as usize] & size.mask(),
-            Ea::Memory(addr) => read_sized(bus, *addr, size),
+            Ea::Memory(addr) => self.read_sized(bus, *addr, size),
             Ea::Immediate(v) => *v & size.mask(),
         }
     }
@@ -291,7 +397,7 @@ impl M68000 {
                 };
             }
             Ea::Address(_) | Ea::Immediate(_) => {}
-            Ea::Memory(addr) => write_sized(bus, *addr, size, value),
+            Ea::Memory(addr) => self.write_sized(bus, *addr, size, value),
         }
     }
 
@@ -311,9 +417,9 @@ impl M68000 {
                 self.write_ea(bus, ea, size, new);
             }
             Ea::Memory(addr) => {
-                let old = read_sized(bus, *addr, size);
+                let old = self.read_sized(bus, *addr, size);
                 let new = f(old) & size.mask();
-                write_sized(bus, *addr, size, new);
+                self.write_sized(bus, *addr, size, new);
             }
             _ => {}
         }
@@ -329,21 +435,76 @@ impl M68000 {
 /// The 68000 drives only A1-A23; bits above that do not reach the bus.
 pub const ADDR_MASK: u32 = 0x00FF_FFFF;
 
-pub(crate) fn read_sized<B: Bus>(bus: &mut B, addr: u32, size: Size) -> u32 {
-    let addr = addr & ADDR_MASK;
-    match size {
-        Size::Byte => bus.read8(addr) as u32,
-        Size::Word => bus.read16(addr) as u32,
-        Size::Long => bus.read32(addr),
-    }
+/// Register file captured at a faulting access (68000 address error).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fault {
+    pub address: u32,
+    pub write: bool,
+    pub d: [u32; 8],
+    pub a: [u32; 8],
+    pub sr: u16,
+    pub usp: u32,
+    pub ssp: u32,
+    pub pc: u32,
 }
 
-pub(crate) fn write_sized<B: Bus>(bus: &mut B, addr: u32, size: Size, value: u32) {
-    let addr = addr & ADDR_MASK;
-    match size {
-        Size::Byte => bus.write8(addr, value as u8),
-        Size::Word => bus.write16(addr, value as u16),
-        Size::Long => bus.write32(addr, value),
+impl M68000 {
+    /// An odd word/long data access aborts the instruction at that point
+    /// (the reference longjmps out): later accesses in the same instruction
+    /// are suppressed and the registers as of the fault are restored after it.
+    fn fault_check(&mut self, addr: u32, write: bool) -> bool {
+        if self.fault.is_some() {
+            return true;
+        }
+        if addr & 1 != 0 {
+            self.fault = Some(Fault {
+                address: addr,
+                write,
+                d: self.d,
+                a: self.a,
+                sr: self.sr.0,
+                usp: self.usp,
+                ssp: self.ssp,
+                pc: self.pc,
+            });
+            return true;
+        }
+        false
+    }
+
+    pub(crate) fn rd8<B: Bus>(&mut self, bus: &mut B, addr: u32) -> u8 {
+        if self.fault.is_some() { 0 } else { bus.read8(addr) }
+    }
+    pub(crate) fn rd16<B: Bus>(&mut self, bus: &mut B, addr: u32) -> u16 {
+        if self.fault_check(addr, false) { 0 } else { bus.read16(addr) }
+    }
+    pub(crate) fn rd32<B: Bus>(&mut self, bus: &mut B, addr: u32) -> u32 {
+        if self.fault_check(addr, false) { 0 } else { bus.read32(addr) }
+    }
+    pub(crate) fn wr8<B: Bus>(&mut self, bus: &mut B, addr: u32, value: u8) {
+        if self.fault.is_none() { bus.write8(addr, value) }
+    }
+    pub(crate) fn wr16<B: Bus>(&mut self, bus: &mut B, addr: u32, value: u16) {
+        if !self.fault_check(addr, true) { bus.write16(addr, value) }
+    }
+    pub(crate) fn wr32<B: Bus>(&mut self, bus: &mut B, addr: u32, value: u32) {
+        if !self.fault_check(addr, true) { bus.write32(addr, value) }
+    }
+
+    pub(crate) fn read_sized<B: Bus>(&mut self, bus: &mut B, addr: u32, size: Size) -> u32 {
+        match size {
+            Size::Byte => self.rd8(bus, addr) as u32,
+            Size::Word => self.rd16(bus, addr) as u32,
+            Size::Long => self.rd32(bus, addr),
+        }
+    }
+
+    pub(crate) fn write_sized<B: Bus>(&mut self, bus: &mut B, addr: u32, size: Size, value: u32) {
+        match size {
+            Size::Byte => self.wr8(bus, addr, value as u8),
+            Size::Word => self.wr16(bus, addr, value as u16),
+            Size::Long => self.wr32(bus, addr, value),
+        }
     }
 }
 
@@ -372,4 +533,25 @@ mod interrupt_tests {
         assert!(cpu.step(&mut bus).exception.is_none());
         assert_eq!((cpu.pc, cpu.a[7], cpu.sr.0), (0x402, 0x2000, 0x2301));
     }
+}
+
+/// Opcode cost with zeroed registers and memory: the reference's
+/// `CYC_INSTRUCTION[IR]` for fixed-cost instructions (memory reads included).
+/// GPGX samples the VDP status at dispatch time plus this cost.
+pub fn base_cycles(opcode: u16) -> u32 {
+    static TABLE: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        (0..=0xFFFFu32)
+            .map(|op| {
+                let mut bus = super::bus::SparseBus::new();
+                bus.write16(0x1000, op as u16);
+                let mut cpu = M68000::new(0x1000);
+                cpu.sr.0 = 0x2700;
+                cpu.prime(&mut bus);
+                let outcome = cpu.step(&mut bus);
+                if outcome.exception.is_some() { 0 } else { outcome.cycles as u16 }
+            })
+            .collect()
+    })[usize::from(opcode)]
+    .into()
 }

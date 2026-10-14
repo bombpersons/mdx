@@ -12,6 +12,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 schemars = { workspace = true }
+ymfm-sys = "=0.2.0"
 
 [lints.rust]
 unsafe_code = "forbid"

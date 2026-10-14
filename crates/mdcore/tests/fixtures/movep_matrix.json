@@ -1,0 +1,68 @@
+{
+  "oracle_core_sha256": "1ba3f40ed6aea2511b9c0d48d079283a884ac8667b916f772443f717e49db04f",
+  "oracle_opcodes_sha256": "d3ff2631658e589813d2915ba3dc03b9fd2097761f6eb221fc6264a4b8d1d6f0",
+  "cases": [
+    {
+      "displacement": 0,
+      "repeat": 0,
+      "rom_sha256": "fa0f454a4d9583f0c167f7a670ddc8c731c3a716a00b0122c0431ea7e61abaf7",
+      "expected": {
+        "transfer": "1100220033004400003300440000000000000000000000000000000000000000",
+        "registers": "aaaa112233440000",
+        "hv": 40704
+      }
+    },
+    {
+      "displacement": 0,
+      "repeat": 8,
+      "rom_sha256": "1d21a2a89d82679256cd9be84beef73e29e97597b6ce3dd3e37e74d763577ff1",
+      "expected": {
+        "transfer": "1100220033004400003300440000000000000000000000000000000000000000",
+        "registers": "aaaa112233440000",
+        "hv": 40960
+      }
+    },
+    {
+      "displacement": 0,
+      "repeat": 31,
+      "rom_sha256": "be8a85995e9b8c8bd1296dd7e958480465d61d9449afc4ea0e86ec05bbc07bcf",
+      "expected": {
+        "transfer": "1100220033004400003300440000000000000000000000000000000000000000",
+        "registers": "aaaa112233440000",
+        "hv": 41216
+      }
+    },
+    {
+      "displacement": 1,
+      "repeat": 0,
+      "rom_sha256": "f8e4e8a761c9f135e45e3f1114228e62b5b809065079afd709420053894de96b",
+      "expected": {
+        "transfer": "0011002200330044000033004400000000000000000000000000000000000000",
+        "registers": "aaaa112233440000",
+        "hv": 40704
+      }
+    },
+    {
+      "displacement": 1,
+      "repeat": 8,
+      "rom_sha256": "9b50444ada506d06ea937906506704fb21c3d6b267c4cff8af54da6427f7ab64",
+      "expected": {
+        "transfer": "0011002200330044000033004400000000000000000000000000000000000000",
+        "registers": "aaaa112233440000",
+        "hv": 40960
+      }
+    },
+    {
+      "displacement": 1,
+      "repeat": 31,
+      "rom_sha256": "cac370abd56ac67dde69bccb694c09eddaaa1d71541685e203998a3a0a01182f",
+      "expected": {
+        "transfer": "0011002200330044000033004400000000000000000000000000000000000000",
+        "registers": "aaaa112233440000",
+        "hv": 41216
+      }
+    }
+  ],
+  "equal": 6,
+  "total": 6
+}

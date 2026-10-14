@@ -18,11 +18,26 @@ pub const TOOL: &str = "mdx.boot";
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct BootData {
+    pub state_artifact: Option<crate::artifacts::Artifact>,
+    pub starting_frame: u64,
+    pub elapsed_frames: u64,
     pub snapshot_artifact: Option<crate::artifacts::Artifact>,
     pub termination: String,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub observations: BTreeMap<String, ObservationCount>,
-    pub input_replay: InputReplayData,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_replay: Option<InputReplayData>,
+    /// Console region in effect (version register).
+    pub console_region: mdcore::cart_hw::ConsoleRegion,
+    /// 68000 writes into the sound side, when `sound_commands` was requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sound_commands: Option<super::sound_log::SoundCommandData>,
     pub requested_frames: Option<u64>,
+    /// Actual completed video frames, independent of VINT service counts.
+    pub reached_frames: u64,
+    pub frame_target_reached: Option<bool>,
+    /// Hard attempted-system-step limit, not the number actually executed.
+    pub instruction_budget: u64,
     pub memory_artifacts: BTreeMap<String, MemoryArtifact>,
     pub reset_vector_raw: String,
     pub reset_vector_on_bus: String,
@@ -37,6 +52,7 @@ pub struct BootData {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub stop_points: Vec<String>,
     /// The first addresses actually executed, in order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub first_addresses: Vec<AddressRecord>,
     /// A ring of the most recently executed addresses, newest last. This is
     /// how you find what led to a fault: the prefix cannot reach past a long
@@ -44,13 +60,17 @@ pub struct BootData {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub last_addresses: Vec<AddressRecord>,
     /// Most frequently executed addresses, with the symbol name if one is known.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub hottest_addresses: Vec<Hotspot>,
-    pub final_registers: Registers,
-    pub vdp: VdpState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub final_registers: Option<Registers>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vdp: Option<VdpState>,
     pub display: Display,
     pub unmapped_accesses: u64,
     /// Unhandled bus accesses, including reads; missing PC means no CPU was
     /// executing. Complete counts/omissions are in observations.unmapped_accesses.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unmapped_access_samples: Vec<mdcore::observe::UnmappedAccess>,
 }
 
@@ -68,6 +88,9 @@ pub struct InputReplayData {
     events_applied: usize,
     events_pending: usize,
     final_pressed_masks: [u8; 2],
+    /// Diagnostic RAM writes (replay file plus inline), not hardware behaviour.
+    pokes_applied: usize,
+    pokes_pending: usize,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -203,6 +226,8 @@ pub struct VdpState {
     pub dma_requests: u64,
     pub dma_bytes: u64,
     pub dma_bus_stall_master_cycles: u64,
+    /// CPU wait from full VDP write FIFO, separate from external DMA waits.
+    pub fifo_stall_master_cycles: u64,
     pub io_trace: Vec<String>,
 }
 
@@ -214,6 +239,8 @@ pub struct Display {
     pub height: usize,
     pub screenshot_path: String,
     pub screenshot_sha256: String,
+    /// SHA-256 of the decoded RGB pixels; stable across PNG encoder changes.
+    pub screenshot_pixels_sha256: String,
     pub distinct_colours: usize,
     pub renderer_limitations: Vec<String>,
 }
@@ -255,6 +282,57 @@ pub fn run_controlled(
     input: Option<&Path>,
     context: &crate::context::Context,
 ) -> Result<(Envelope<BootData>, i32), Failure> {
+    run_resumable(
+        rom,
+        instructions,
+        trace,
+        out_dir,
+        trace_registers,
+        force_branches,
+        stop_at,
+        frames,
+        input,
+        &[],
+        None,
+        None,
+        super::state::RegionChoice::Auto,
+        None,
+        false,
+        context,
+    )
+}
+
+/// Load backup RAM contents (up to 64 KiB from offset 0, e.g. a GPGX .srm).
+pub fn load_sram(system: &mut mdcore::System, path: &Path) -> Result<(), Failure> {
+    if !system.cart_hw.has_sram() {
+        return Err(crate::artifacts::failure(
+            "invalid_arguments",
+            "this cartridge has no backup RAM (no header declaration, ROM over 2 MiB)",
+        ));
+    }
+    let bytes = crate::artifacts::read_bounded(path, 0x10000)?;
+    system.cart_hw.sram[..bytes.len()].copy_from_slice(&bytes);
+    Ok(())
+}
+
+pub fn run_resumable(
+    rom: &Path,
+    instructions: u64,
+    trace: usize,
+    out_dir: Option<&Path>,
+    trace_registers: bool,
+    force_branches: &[String],
+    stop_at: Option<Vec<u32>>,
+    frames: Option<u64>,
+    input: Option<&Path>,
+    pokes: &[super::input::Poke],
+    sound_commands: Option<&super::sound_log::SoundCommandOptions>,
+    sram: Option<&Path>,
+    region: super::state::RegionChoice,
+    from_state: Option<&str>,
+    save_state: bool,
+    context: &crate::context::Context,
+) -> Result<(Envelope<BootData>, i32), Failure> {
     if instructions > 100_000_000 || trace > 4096 || frames.is_some_and(|v| v > 100_000) {
         return Err(Failure {
             code: "limit_exceeded".into(),
@@ -275,8 +353,9 @@ pub fn run_controlled(
             "stop points must be at most 64 even 24-bit addresses",
         ));
     }
-    let replay = super::input::Replay::load(input)?;
+    let replay = super::input::Replay::load_with_pokes(input, pokes)?;
     let mut next_input = 0usize;
+    let mut next_poke = 0usize;
     let cart = Cartridge::load(rom).map_err(|e| Failure {
         code: "rom_unreadable".into(),
         message: e.to_string(),
@@ -284,7 +363,22 @@ pub fn run_controlled(
     })?;
     let sha = cart.sha256.clone();
     let rom_len = cart.data.len();
-    let mut system = System::new(cart);
+    let mut system = super::state::load(cart, from_state, region, context)?;
+    if let Some(options) = sound_commands {
+        super::sound_log::validate(options)?;
+        super::sound_log::install(&mut system, options);
+    }
+    if let Some(path) = sram {
+        load_sram(&mut system, path)?;
+    }
+    let starting_frame = system.vdp.frame;
+    let frame_target = frames
+        .map(|f| {
+            starting_frame
+                .checked_add(f)
+                .ok_or_else(|| crate::artifacts::failure("limit_exceeded", "frame target overflow"))
+        })
+        .transpose()?;
     system.observation_limit = 512;
     // `--force-branch 0xADDR=take|skip` walks a cartridge down a path its own
     // condition codes would not choose, which is how the alternate side of a
@@ -342,18 +436,20 @@ pub fn run_controlled(
             termination = reason;
             break;
         }
-        if frames.is_some_and(|target| system.vdp.frame >= target) {
+        if frame_target.is_some_and(|target| system.vdp.frame >= target) {
             termination = "frame_target";
             break;
         }
         while let Some(event) = replay
             .events
             .get(next_input)
-            .filter(|event| event.frame <= system.vdp.frame)
+            .filter(|event| event.frame <= system.vdp.frame - starting_frame)
         {
-            system.io.pad_buttons[event.port] = event.mask();
+            system.set_pad(event.port, event.mask());
             next_input += 1;
         }
+        let elapsed = system.vdp.frame - starting_frame;
+        replay.apply_pokes(&mut system, elapsed, &mut next_poke);
         // The pc at the top of the iteration is where the previous instruction
         // decided to go, so its distance from the one before it is the length
         // that instruction actually consumed.
@@ -438,8 +534,18 @@ pub fn run_controlled(
     if let Some(slot) = pending_slot {
         first_addresses[slot].next_pc = format!("0x{:08X}", system.cpu.pc);
     }
-    if frames.is_some_and(|target| system.vdp.frame >= target) {
-        termination = "frame_target";
+    // A target reached by the final budgeted step is still a successful stop.
+    // Do not overwrite an explicit timeout/cancellation reason.
+    if termination == "instruction_budget" {
+        if frame_target.is_some_and(|target| system.vdp.frame >= target) {
+            termination = "frame_target";
+        } else if stop_at
+            .as_ref()
+            .is_some_and(|stops| stops.contains(&system.cpu.pc))
+        {
+            stopped_at = Some(system.cpu.pc);
+            termination = "stop_point";
+        }
     }
 
     let mut hottest: Vec<(u32, u64)> = histogram
@@ -448,7 +554,7 @@ pub fn run_controlled(
         .collect();
     hottest.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
 
-    let (frame, renderer_limitations) = system.vdp.render();
+    let (frame, renderer_limitations) = system.vdp.frame();
     let distinct_colours = count_colours(&frame);
 
     let default_directory = context.store.join("captures");
@@ -463,13 +569,17 @@ pub fn run_controlled(
     let screenshot_path = screenshot.path.clone();
 
     let mut memory_artifacts = BTreeMap::new();
-    for (name, bytes) in [
+    let mut memories = vec![
         ("wram", system.wram.as_slice()),
         ("vram", system.vdp.vram.as_slice()),
         ("cram", system.vdp.cram.as_slice()),
         ("vsram", system.vdp.vsram.as_slice()),
         ("z80_ram", system.z80_ram.as_slice()),
-    ] {
+    ];
+    if system.cart_hw.has_sram() {
+        memories.push(("sram", system.cart_hw.sram.as_slice()));
+    }
+    for (name, bytes) in memories {
         let artifact = crate::artifacts::named(directory, name, "bin", bytes)?;
         memory_artifacts.insert(
             name.to_string(),
@@ -541,18 +651,29 @@ pub fn run_controlled(
             },
         );
     }
+    let sound_commands = super::sound_log::finish(&mut system, &context.store)?;
     let data = BootData {
+        console_region: system.region(),
+        sound_commands,
+        state_artifact: super::state::save(&system, save_state, context)?,
+        starting_frame,
+        elapsed_frames: system.vdp.frame - starting_frame,
         snapshot_artifact: None,
         termination: termination.into(),
         observations,
-        input_replay: InputReplayData {
+        input_replay: Some(InputReplayData {
             source_sha256: replay.source_sha256,
             events_applied: next_input,
             events_pending: replay.events.len() - next_input,
             events: replay.events,
             final_pressed_masks: system.io.pad_buttons,
-        },
+            pokes_applied: next_poke,
+            pokes_pending: replay.pokes.len() - next_poke,
+        }),
         requested_frames: frames,
+        reached_frames: system.vdp.frame,
+        frame_target_reached: frame_target.map(|target| system.vdp.frame >= target),
+        instruction_budget: instructions,
         memory_artifacts,
         last_addresses: tail
             .iter()
@@ -594,15 +715,16 @@ pub fn run_controlled(
                 region: mdcore::memmap::region(*pc).as_str().to_string(),
             })
             .collect(),
-        final_registers: Registers {
+        final_registers: Some(Registers {
             d: std::array::from_fn(|i| format!("0x{:08X}", system.cpu.d[i])),
             a: std::array::from_fn(|i| format!("0x{:08X}", system.cpu.a[i])),
             sr: format!("0x{:04X}", system.cpu.sr.0),
-        },
-        vdp: VdpState {
+        }),
+        vdp: Some(VdpState {
             dma_requests: system.vdp.dma_requests,
             dma_bytes: system.vdp.dma_bytes,
             dma_bus_stall_master_cycles: system.vdp.dma_bus_stall_master_cycles,
+            fifo_stall_master_cycles: system.vdp.fifo_stall_master_cycles,
             line: system.vdp.line,
             frame: system.vdp.frame,
             code: system.vdp.code,
@@ -660,12 +782,13 @@ pub fn run_controlled(
             cram_entries_nonzero: cram_used,
             registers: system.vdp.registers.to_vec(),
             display_enabled: system.vdp.display_enabled(),
-        },
+        }),
         display: Display {
             width: frame.width,
             height: frame.height,
             screenshot_path: screenshot_path.display().to_string(),
             screenshot_sha256: screenshot.sha256.clone(),
+            screenshot_pixels_sha256: pixels_sha256(&frame),
             screenshot_artifact: screenshot,
             distinct_colours: distinct_colours,
             renderer_limitations,
@@ -675,6 +798,12 @@ pub fn run_controlled(
     };
 
     let mut warnings = Vec::new();
+    if termination == "instruction_budget" {
+        if let Some(target) = frames.filter(|target| system.vdp.frame < *target) {
+            warnings.push(Warning::new("frame_target_not_reached",format!(
+                "requested frame {target}, reached frame {}; the {instructions}-step budget stopped execution first. Increase instructions to reach the frame target; frame counts are not serviced VINT counts.",system.vdp.frame)));
+        }
+    }
     if entry_region != mdcore::Region::Cartridge {
         warnings.push(Warning::new(
             "entry_point_not_in_cartridge",
@@ -703,21 +832,26 @@ pub fn run_controlled(
         format!("trace[0..{}]", data.first_addresses.len()),
         format!("frames[0..{}]", system.vdp.frame),
     ];
-    let mut coverage = if frames.is_some_and(|target| system.vdp.frame < target)
-        || (stop_at.is_some() && stopped_at.is_none())
-        || matches!(termination, "cancelled" | "timeout")
-    {
-        Coverage::partial(
-            conditions,
-            vec![],
-            vec![
-                "requested frame target was not reached within the instruction budget/stop points"
-                    .into(),
-            ],
-        )
-    } else {
-        Coverage::complete(conditions)
-    };
+    let mut coverage = Coverage::complete(conditions);
+    if matches!(termination, "cancelled" | "timeout") {
+        coverage.status = crate::envelope::CoverageStatus::Partial;
+        coverage
+            .limitations
+            .push(format!("run terminated with {termination}"));
+    } else if !matches!(termination, "stop_point" | "frame_target") {
+        if frame_target.is_some_and(|target| system.vdp.frame < target) {
+            coverage.status = crate::envelope::CoverageStatus::Partial;
+            coverage.limitations.push(
+                "requested frame target was not reached within the instruction budget".into(),
+            );
+        }
+        if stop_at.as_ref().is_some_and(|stops| !stops.is_empty()) && stopped_at.is_none() {
+            coverage.status = crate::envelope::CoverageStatus::Partial;
+            coverage
+                .limitations
+                .push("requested stop point was not reached within the instruction budget".into());
+        }
+    }
     coverage.limits = vec![
         format!("attempted_cpu_steps <= {instructions}"),
         format!("inline_trace_prefix <= {trace}"),
@@ -727,7 +861,7 @@ pub fn run_controlled(
         .limitations
         .extend(data.display.renderer_limitations.clone());
     coverage.limitations.push("CPU step counts include interrupt entry; register traces are pre-step; device logs are bounded samples with explicit observed/retained/omitted counts".into());
-    if !force_branches.is_empty() {
+    if !system.cpu.branch_override.is_empty() {
         coverage
             .limitations
             .push("analyst-forced branch outcomes; this is a modified-execution diagnostic".into());
@@ -743,22 +877,15 @@ pub fn run_controlled(
 fn opcode_at(system: &System, pc: u32) -> u16 {
     match mdcore::memmap::region(pc) {
         mdcore::memmap::Region::Cartridge => {
-            let off = mdcore::memmap::fold_to_cart_mirrored(pc, system.cart.data.len()) as usize;
-            let len = system.cart.data.len();
-            // The first byte in the file is the *high* half of the word. Getting
-            // this the wrong way round makes every opcode in the trace read
-            // backwards, which is worse than not printing it at all: it looks
-            // like the CPU fetched a different instruction than the file holds.
-            let hi = system.cart.data[off % len] as u16;
-            let lo = system.cart.data[(off + 1) % len] as u16;
-            (hi << 8) | lo
+            u16::from_be_bytes([system.cart.mapped_byte(pc), system.cart.mapped_byte(pc.wrapping_add(1))])
         }
         _ => 0,
     }
 }
 
 fn cart_offset(pc: u32, rom_len: usize) -> Option<String> {
-    if mdcore::memmap::region(pc) == mdcore::Region::Cartridge {
+    if mdcore::memmap::region(pc) == mdcore::Region::Cartridge
+        && (mdcore::memmap::fold_to_cart_mirrored(pc, rom_len) as usize) < rom_len {
         Some(format!(
             "0x{:06X}",
             mdcore::memmap::fold_to_cart_mirrored(pc, rom_len)
@@ -794,18 +921,48 @@ fn count_colours(frame: &Framebuffer) -> usize {
     seen.len()
 }
 
+/// SHA-256 of the decoded RGB pixels, independent of the PNG encoding.
+pub(super) fn pixels_sha256(frame: &Framebuffer) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(&frame.data))
+}
+
+/// Encode RGB pixels as PNG. Frames with at most 256 colours (all Mega Drive
+/// output) use an indexed palette; maximum compression with adaptive filters.
+/// Decoded pixels are identical either way.
 pub(super) fn encode_png(frame: &Framebuffer) -> std::io::Result<Vec<u8>> {
+    let error = |e: png::EncodingError| std::io::Error::other(e.to_string());
+    let mut palette: Vec<[u8; 3]> = Vec::new();
+    let mut lookup = std::collections::HashMap::new();
+    let mut indices = Vec::with_capacity(frame.data.len() / 3);
+    for px in frame.data.chunks_exact(3) {
+        let colour = [px[0], px[1], px[2]];
+        let index = *lookup.entry(colour).or_insert_with(|| {
+            palette.push(colour);
+            palette.len() - 1
+        });
+        if index > 255 {
+            break;
+        }
+        indices.push(index as u8);
+    }
+    let indexed = palette.len() <= 256;
     let mut bytes = Vec::new();
     {
         let mut encoder = png::Encoder::new(&mut bytes, frame.width as u32, frame.height as u32);
-        encoder.set_color(png::ColorType::Rgb);
         encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder
-            .write_header()
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        encoder.set_compression(png::Compression::Best);
+        encoder.set_adaptive_filter(png::AdaptiveFilterType::Adaptive);
+        if indexed {
+            encoder.set_color(png::ColorType::Indexed);
+            encoder.set_palette(palette.concat());
+        } else {
+            encoder.set_color(png::ColorType::Rgb);
+        }
+        let mut writer = encoder.write_header().map_err(error)?;
         writer
-            .write_image_data(&frame.data)
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
+            .write_image_data(if indexed { &indices } else { &frame.data })
+            .map_err(error)?;
     }
     Ok(bytes)
 }

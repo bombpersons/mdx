@@ -120,7 +120,7 @@ impl<'a> Cur<'a> {
                 format!("{}({},{index}.{size})", disp, self.an(reg))
             }
             7 => match reg {
-                0 => Cur::hex(self.u16() as u32),
+                0 => format!("{}.w", Cur::hex(self.u16() as i16 as i32 as u32)),
                 1 => Cur::hex(self.u32()),
                 4 => match size {
                     crate::cpu::Size::Long => Cur::hex(self.u32()),
@@ -186,6 +186,7 @@ pub fn disassemble(bytes: &[u8], origin: u32) -> Instruction {
 
 fn decode(c: &mut Cur, bytes: &[u8], origin: u32) -> Option<String> {
     let ir = c.u16();
+    if ir == 0x4e71 { return Some("nop".into()); }
     let line = ir & 0xF000;
     // The generic size field is bits 7-6 everywhere except MOVE (which sizes
     // itself in bits 11-9) and MOVEM (bits 7-6 with 2 = word).
@@ -250,7 +251,7 @@ fn decode(c: &mut Cur, bytes: &[u8], origin: u32) -> Option<String> {
                 if ir & 0x0200 != 0 {
                     Cur::bare(c.u32())
                 } else {
-                    Cur::bare(c.u16() as u32)
+                    format!("{}.w", Cur::bare(c.u16() as i16 as i32 as u32))
                 }
             } else if dst_mode_bits == 0 {
                 // MOVE's destination has its own EA table: mode 000 is a data
@@ -461,6 +462,10 @@ fn decode(c: &mut Cur, bytes: &[u8], origin: u32) -> Option<String> {
         // table.
         0x4000 => {
             let mode = (ir >> 3) & 7;
+            if ir & 0xfff0 == 0x4e60 {
+                let register = c.an(ir & 7);
+                return Some(if ir & 8 == 0 { format!("move.l {register},usp") } else { format!("move.l usp,{register}") });
+            }
             // MOVE SR/CCR to an effective address shares this line with the
             // fixed operations: 0x40C0 is CCR and 0x44C0 is SR, with the
             // destination in the ordinary EA fields. 0x40E7 at $27E02 is
@@ -773,6 +778,14 @@ fn decode(c: &mut Cur, bytes: &[u8], origin: u32) -> Option<String> {
             let mode = (ir >> 3) & 7;
             let reg = ir & 7;
             let data_reg = (ir >> 9) & 7;
+            if matches!(ir & 0xF1F0, 0x8100 | 0xC100) {
+                let name = if line == 0x8000 { "sbcd" } else { "abcd" };
+                return Some(if ir & 8 == 0 {
+                    format!("{name}.b {},{}", c.dn(reg), c.dn(data_reg))
+                } else {
+                    format!("{name}.b -({}),-({})", c.an(reg), c.an(data_reg))
+                });
+            }
             if matches!(ir & 0xF1F8, 0xC140 | 0xC148 | 0xC188) {
                 let (left, right) = match ir & 0xF1F8 {
                     0xC140 => (c.dn(data_reg), c.dn(reg)),
@@ -1131,7 +1144,7 @@ mod move_destination_tests {
         // move_16_ai_i - destination (A0) - so the two must not be confused.)
         assert_eq!(
             d(&[0x31, 0xFC, 0x12, 0x34, 0x56, 0x78]),
-            "move.w #0x1234,$5678"
+            "move.w #0x1234,$5678.w"
         );
         assert_eq!(
             d(&[0x33, 0xFC, 0x12, 0x34, 0x56, 0x78, 0x00, 0x00]),
@@ -1249,7 +1262,7 @@ mod tests {
         // A brief destination is word or long by bit 9; bit 8 only marks an
         // immediate source. Reading bit 8 here is accidentally right for every
         // long destination, which is why only the word form went wrong.
-        assert_eq!(dis("31fc0000fe26").0, "move.w #0x0,$FE26");
+        assert_eq!(dis("31fc0000fe26").0, "move.w #0x0,$FFFFFE26.w");
         // Note: 0x33FC reads as a word move too, because the size is taken
         // from bits 15-12 and those are constant on the 0x3xxx line. That is
         // a real defect in the decoder, recorded in notes/ rather than

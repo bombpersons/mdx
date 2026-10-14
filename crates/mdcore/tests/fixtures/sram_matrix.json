@@ -1,0 +1,64 @@
+{
+  "oracle_core_sha256": "1ba3f40ed6aea2511b9c0d48d079283a884ac8667b916f772443f717e49db04f",
+  "oracle_opcodes_sha256": "d3ff2631658e589813d2915ba3dc03b9fd2097761f6eb221fc6264a4b8d1d6f0",
+  "cases": [
+    {
+      "length": 524288,
+      "header": false,
+      "rom_sha256": "70f8bf2ca1248b7340699b651abd4d116092448173a34ffd3e2dd0fb4f6824c5",
+      "expected": {
+        "words": [
+          65535,
+          17218,
+          17220,
+          17220,
+          255
+        ]
+      }
+    },
+    {
+      "length": 524288,
+      "header": true,
+      "rom_sha256": "75a771759f86b7e3cb64fda2ee10c1eb98f37207f9a393e0d665a6f27adcfb13",
+      "expected": {
+        "words": [
+          65535,
+          17218,
+          17220,
+          17220,
+          255
+        ]
+      }
+    },
+    {
+      "length": 4194304,
+      "header": false,
+      "rom_sha256": "dd53aacdd0b549a168efc857855301cb45082fc7c43819df0dc1bdae8516f309",
+      "expected": {
+        "words": [
+          27756,
+          27756,
+          27756,
+          27756,
+          27756
+        ]
+      }
+    },
+    {
+      "length": 4194304,
+      "header": true,
+      "rom_sha256": "32ba524ca24409c75ec52b3e216fe78e8cca8ae62652499ffef239a1ea3bdd23",
+      "expected": {
+        "words": [
+          27756,
+          27756,
+          65348,
+          65348,
+          27756
+        ]
+      }
+    }
+  ],
+  "equal": 4,
+  "total": 4
+}

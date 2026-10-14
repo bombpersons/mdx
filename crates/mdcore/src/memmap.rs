@@ -22,8 +22,9 @@ pub fn fold_to_cart_mirrored(addr: u32, rom_len: usize) -> u32 {
     if rom_len == 0 {
         return a;
     }
-    // Cartridges are mirrored at a power-of-two period, minimum 1 KiB.
-    let period = (rom_len.max(0x400) as u32).next_power_of_two();
+    // Cartridges are mirrored at a power-of-two period, minimum 64 KiB
+    // (`Cartridge::mirror_period` also applies the Sonic & Knuckles rule).
+    let period = (rom_len.max(0x1_0000) as u32).next_power_of_two();
     a % period
 }
 
@@ -37,11 +38,12 @@ pub fn fold_to_wram(addr: u32) -> u32 {
 #[serde(rename_all = "lowercase")]
 pub enum Region {
     Cartridge,
-    /// Z80 work RAM, 0xA00000-0xA03FFF.
+    /// Z80 work RAM and its mirrors in the 68000's A0 aperture.
     Z80Ram,
-    /// The FM sound chip window, 0xA04000-0xA04003.
+    /// FM ports mirrored through A04000-A05FFF and A0C000-A0DFFF.
     Fm,
     Io,
+    /// BUSREQ/RESET pages and the serial Z80 bank register.
     Z80Ctrl,
     Sram,
     Vdp,
@@ -71,7 +73,7 @@ impl Region {
 ///   * A23 and A22 clear          -> cartridge
 ///   * A00000-A0FFFF              -> Z80 window
 ///   * A10000-A1001F              -> I/O
-///   * A11100 / A11200            -> Z80 control
+///   * A11100-A112FF              -> Z80 BUSREQ/RESET (mirrored byte lanes)
 ///   * A130F0-A130FF              -> cartridge save RAM
 ///   * C00000-C0001F              -> VDP
 ///   * E00000-FFFFFF              -> work RAM (64 KiB mirrored)
@@ -81,11 +83,14 @@ pub fn region(addr: u32) -> Region {
         return Region::Cartridge;
     }
     match addr & 0x00FF_FFFF {
-        0x00A0_0000..=0x00A0_3FFF => Region::Z80Ram,
-        0x00A0_4000..=0x00A0_4003 => Region::Fm,
+        0x00A0_0000..=0x00A0_3FFF | 0x00A0_8000..=0x00A0_BFFF => Region::Z80Ram,
+        0x00A0_4000..=0x00A0_5FFF | 0x00A0_C000..=0x00A0_DFFF => Region::Fm,
+        0x00A0_6000..=0x00A0_60FF | 0x00A0_E000..=0x00A0_E0FF => Region::Z80Ctrl,
         0x00A1_0000..=0x00A1_001F => Region::Io,
-        0x00A1_1100 | 0x00A1_1200 | 0x00A1_1201 => Region::Z80Ctrl,
-        0x00A1_30F0..=0x00A1_30FF => Region::Sram,
+        0x00A1_1100..=0x00A1_12FF => Region::Z80Ctrl,
+        // $A130xx (!TIME): SRAM switch, bank registers and board-specific
+        // registers, all through the cartridge's !TIME handlers.
+        0x00A1_3000..=0x00A1_30FF => Region::Sram,
         0x00C0_0000..=0x00C0_001F => Region::Vdp,
         _ => {
             if addr & 0x00E0_0000 == 0x00E0_0000 {
@@ -140,6 +145,19 @@ mod tests {
         // Past the VDP's 32-byte port window the address is simply not mapped.
         assert_eq!(region(0x00C0_0020), Region::Unmapped);
         assert_eq!(region(0x00FF_0000), Region::Wram);
+    }
+
+    #[test]
+    fn sound_windows_decode_mirrors_and_both_control_byte_lanes() {
+        for address in [0xa04003, 0xa04004, 0xa05fff, 0xa0c000, 0xa0dfff] {
+            assert_eq!(region(address), Region::Fm);
+        }
+        assert_eq!(region(0xa0bfff), Region::Z80Ram);
+        assert_eq!(region(0xa060ff), Region::Z80Ctrl);
+        assert_eq!(region(0xa0e000), Region::Z80Ctrl);
+        for address in [0xa11100, 0xa11101, 0xa11102, 0xa111ff, 0xa11200, 0xa112ff] {
+            assert_eq!(region(address), Region::Z80Ctrl);
+        }
     }
 
     #[test]

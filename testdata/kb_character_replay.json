@@ -1,0 +1,8 @@
+{
+  "events": [
+    {"frame": 3000, "port": 0, "buttons": ["start"]},
+    {"frame": 3004, "port": 0, "buttons": []},
+    {"frame": 3400, "port": 0, "buttons": ["c"]},
+    {"frame": 3404, "port": 0, "buttons": []}
+  ]
+}

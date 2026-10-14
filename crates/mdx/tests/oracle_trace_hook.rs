@@ -17,9 +17,10 @@ typedef int m68k_register_t;
 #define M68K_REG_SR 101
 #define M68K_REG_D0 0
 static unsigned int pc, ordinal;
+#define MDX_TRACE_CYCLES (ordinal*7)
 static unsigned int m68k_get_reg(int r) {{ return r==100 ? pc : r==101 ? 0x2700 : 0x12340000+ordinal*32+r; }}
 #include "{}"
-int main(void) {{ unsigned int i; for(i=0;i<32;i++) {{ ordinal=i;pc=0x100+(i%10)*2;mdx_trace_instruction(); }} return 0; }}
+int main(void) {{ unsigned int i; for(i=0;i<32;i++) {{ ordinal=i;pc=0x100+(i%10)*2;retro_mdx_trace_set_frame(i/8);mdx_trace_instruction(); }} return 0; }}
 "#,hook.display())).unwrap();
     assert!(Command::new("cc")
         .args(["-std=c99", "-O2", "-Werror=uninitialized"])
@@ -36,9 +37,11 @@ int main(void) {{ unsigned int i; for(i=0;i<32;i++) {{ ordinal=i;pc=0x100+(i%10)
         (3, Some("8"), Some("0x10a"), 15, vec![0x10a, 0x10c]),
     ] {
         let output = root.path().join(format!("{index}.bin"));
+        let timing = root.path().join(format!("{index}.timing"));
         let mut command = Command::new(&executable);
         command
             .env("MDX_ORACLE_TRACE", &output)
+            .env("MDX_ORACLE_TRACE_TIMING", &timing)
             .env("MDX_ORACLE_TRACE_LIMIT", "2")
             .env_remove("MDX_ORACLE_TRACE_START_PC")
             .env_remove("MDX_ORACLE_TRACE_START_COUNT");
@@ -51,6 +54,16 @@ int main(void) {{ unsigned int i; for(i=0;i<32;i++) {{ ordinal=i;pc=0x100+(i%10)
         assert!(command.status().unwrap().success());
         let bytes = fs::read(output).unwrap();
         assert_eq!(bytes.len(), 144);
+        let clock = fs::read(timing).unwrap();
+        assert_eq!(clock.len(), 24);
+        for (index, row) in clock.chunks_exact(12).enumerate() {
+            let word = |i: usize| u32::from_le_bytes(row[i * 4..i * 4 + 4].try_into().unwrap());
+            let ordinal = first + index as u32;
+            assert_eq!(
+                (word(0), word(1), word(2)),
+                (ordinal, ordinal / 8, ordinal * 7)
+            );
+        }
         for (index, (record, pc)) in bytes.chunks_exact(72).zip(expected).enumerate() {
             let word = |index: usize| {
                 u32::from_le_bytes(record[index * 4..index * 4 + 4].try_into().unwrap())

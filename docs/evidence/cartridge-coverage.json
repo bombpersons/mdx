@@ -1,0 +1,164 @@
+{
+  "schema": "mdx.cartridge-coverage.v1",
+  "toolkit_commit": "e8e8dcb5598d577619502d9d6dae3f188b7c4f46",
+  "github_ci": {
+    "url": "https://github.com/bombpersons/mdx/actions/runs/38304137847",
+    "status": "pass"
+  },
+  "binary_sha256": "44b85cfe640c8ab8ee4888e9ad961a7427acdbf7b9bbb6c048995e62ef4c1177",
+  "oracle_core_sha256": "1ba3f40ed6aea2511b9c0d48d079283a884ac8667b916f772443f717e49db04f",
+  "oracle_wrapper_sha256": "63d6a3b800de760ab6dc3fb8e8072b57ec3e897ac7682fbc0e61e811ab7d9962",
+  "oracle_abi_sha256": "99f45066aea602e452db3387f50645c79e50f2fa4f15d0e58adcd3f2e7fdda30",
+  "release_tests": {
+    "passed": 127,
+    "failed": 0,
+    "ignored": 10
+  },
+  "observer_python_tests": {
+    "passed": 4
+  },
+  "kings_bounty_pixel_gates": {
+    "passed": 7,
+    "failed": 0
+  },
+  "cadash_pixel_gates": {
+    "passed": 5,
+    "failed": 0
+  },
+  "mcp": {
+    "binary_sha256": "44b85cfe640c8ab8ee4888e9ad961a7427acdbf7b9bbb6c048995e62ef4c1177",
+    "tools": 17,
+    "frames": 5500,
+    "changed_pixels": 0,
+    "snapshot": "sha256:85a095480963dc4ed76d6d3e175aec56f9e5f0e94d1bf78b5c23110fe9462e42",
+    "image": "/home/maisy/opencode_projects/reverse_kings/.mdx/cadash/final-mcp/frame-6f2c70a414b69b3f670d1d87258161300028ca8b7e2542acc0b2eeee09f33e61.png",
+    "memory_query_ok": true
+  },
+  "cases": [
+    {
+      "cartridge": "Cadash",
+      "frame": 1000,
+      "reference": "testdata/oracle_cadash_start1000.png",
+      "reference_sha256": "adbef696713c6bcb68fa0b52751153bff139d1779e39c06c2efba4c8d7ccec71",
+      "input": "testdata/cadash_start_replay.json",
+      "input_sha256": "fbaa6c86182f77a1e20ec8d3fd7259e32e9f8723bcf04a17c0d8a2721a127fa6",
+      "changed_pixels": 0,
+      "status": "pixel_gate_pass"
+    },
+    {
+      "cartridge": "Cadash",
+      "frame": 1600,
+      "reference": "testdata/oracle_cadash_name1600.png",
+      "reference_sha256": "aa15486f2f628a8733254adedbf21ca51c92adc5d1684fadf32e59abae6de2c9",
+      "input": "testdata/cadash_play_replay.json",
+      "input_sha256": "d5529916a5b66cb2183a9d7f93d5f15d43b9d8aa926c32536d52beaeda92d22d",
+      "changed_pixels": 0,
+      "status": "pixel_gate_pass"
+    },
+    {
+      "cartridge": "Cadash",
+      "frame": 2300,
+      "reference": "testdata/oracle_cadash_castle2300.png",
+      "reference_sha256": "116204cd7e99a9f4ce9faf37bf4daffb83e3942b195f473470132de3282a95c6",
+      "input": "testdata/cadash_play_replay.json",
+      "input_sha256": "d5529916a5b66cb2183a9d7f93d5f15d43b9d8aa926c32536d52beaeda92d22d",
+      "changed_pixels": 0,
+      "status": "pixel_gate_pass"
+    },
+    {
+      "cartridge": "Cadash",
+      "frame": 4500,
+      "reference": "testdata/oracle_cadash_walk4500.png",
+      "reference_sha256": "eb0e280aa86b3d654b6e8728b27bb046d7443c2adb5bdb76897dfe4624fa0973",
+      "input": "testdata/cadash_walk_replay.json",
+      "input_sha256": "761db440f9d2a5d8ade8738cfb4a86e3fded7c058a5f23ebb7673c08cec4b77c",
+      "changed_pixels": 0,
+      "status": "pixel_gate_pass"
+    },
+    {
+      "cartridge": "Cadash",
+      "frame": 5500,
+      "reference": "testdata/oracle_cadash_left5500.png",
+      "reference_sha256": "1563f3c8ac68e80b81e717750c130751ea3ef0f72835449b738444b15d15c4f7",
+      "input": "testdata/cadash_exit_replay.json",
+      "input_sha256": "c8b39cc84f51ea5e3a6bb546ae34c23bfb26b1b25e8db6d6ee0c931c5a46a7d9",
+      "changed_pixels": 0,
+      "status": "pixel_gate_pass"
+    },
+    {
+      "cartridge": "Earthworm Jim",
+      "frame": 1200,
+      "rom_sha256": "0fc7b0da6c42fe3b7e942607dae48f6344973127e6e51f2c6ca040d6c7e24044",
+      "report": ".mdx/cross-rom/44b85cfe640c8ab8/ewj.json",
+      "reference": ".mdx/cross-rom/ewj-oracle1200.png",
+      "reference_sha256": "a3229d89955cf7eca772f5a97d10edaa9f739d2db6eececd45d94973cc735ad0",
+      "input": null,
+      "input_sha256": null,
+      "changed_pixels": 3422,
+      "status": "partial_fidelity",
+      "exceptions": [],
+      "image": "/home/maisy/opencode_projects/reverse_kings/.mdx/cross-rom/44b85cfe640c8ab8/ewj/frame-d0c01f48b7c59f8a0be5a81e740fbd0a2b815b20597b90a5425359056a198d9d.png"
+    },
+    {
+      "cartridge": "Earthworm Jim",
+      "frame": 2800,
+      "rom_sha256": "0fc7b0da6c42fe3b7e942607dae48f6344973127e6e51f2c6ca040d6c7e24044",
+      "report": ".mdx/cross-rom/44b85cfe640c8ab8/ewj-play.json",
+      "reference": ".mdx/cross-rom/ewj-oracle2800.png",
+      "reference_sha256": "c6f8de014dcdd0f087232d7893d6da5f5ac8ab3de938d2502e66007b1b3e7423",
+      "input": "testdata/cross_rom_start_replay.json",
+      "input_sha256": "956a209ded9e04c4ef8c2daaf69bf57471b175d76820b129872dba05dbcc46bc",
+      "changed_pixels": 2296,
+      "status": "partial_fidelity",
+      "exceptions": [],
+      "image": "/home/maisy/opencode_projects/reverse_kings/.mdx/cross-rom/44b85cfe640c8ab8/ewj-play/frame-e7a3d2e399e91931517ebc46a67a366b214792c1c682f3259cb4800545ac282c.png"
+    },
+    {
+      "cartridge": "Earthworm Jim",
+      "frame": 6000,
+      "rom_sha256": "0fc7b0da6c42fe3b7e942607dae48f6344973127e6e51f2c6ca040d6c7e24044",
+      "report": ".mdx/cross-rom/44b85cfe640c8ab8/ewj-level6000.json",
+      "reference": ".mdx/cross-rom/ewj-oracle6000.png",
+      "reference_sha256": "b4f23f781d85d73ff86e227f705b90684ac441213c144f704e614834ad03541d",
+      "input": "testdata/ewj_play_replay.json",
+      "input_sha256": "003cd93450e446a46cbc4ce213aa3489367469e8bf0c0983470b58466138c7da",
+      "changed_pixels": 1582,
+      "status": "partial_fidelity",
+      "exceptions": [],
+      "image": "/home/maisy/opencode_projects/reverse_kings/.mdx/cross-rom/44b85cfe640c8ab8/ewj-level6000/frame-e79e5c345760f7fe006204f59928d2d1e21f61fb5c623b03533605f74c9c3423.png"
+    },
+    {
+      "cartridge": "Hokuto no Ken",
+      "frame": 1200,
+      "rom_sha256": "3318f7dde3fa54c69b3144a00abe7501c42277609dc0743566f246428180f4a1",
+      "report": ".mdx/cross-rom/44b85cfe640c8ab8/hokuto.json",
+      "reference": ".mdx/cross-rom/hokuto-oracle1200.png",
+      "reference_sha256": "7662d73597dd3d33c67f53a3e6fbcfdfc46f2f8d762739eeae9aca59bda156c5",
+      "input": null,
+      "input_sha256": null,
+      "changed_pixels": 5782,
+      "status": "partial_fidelity",
+      "exceptions": [],
+      "image": "/home/maisy/opencode_projects/reverse_kings/.mdx/cross-rom/44b85cfe640c8ab8/hokuto/frame-66362abaa4fd0ca2012c15a5ea25765b4865b4c49b052f4bf478881c75c59165.png"
+    },
+    {
+      "cartridge": "Hokuto no Ken",
+      "frame": 2800,
+      "rom_sha256": "3318f7dde3fa54c69b3144a00abe7501c42277609dc0743566f246428180f4a1",
+      "report": ".mdx/cross-rom/44b85cfe640c8ab8/hokuto-play.json",
+      "reference": ".mdx/cross-rom/hokuto-oracle2800.png",
+      "reference_sha256": "ef8275ac083c0639143a173578deb946fbf55b0c69660bf90c3ab6e1091615a5",
+      "input": "testdata/cross_rom_start_replay.json",
+      "input_sha256": "956a209ded9e04c4ef8c2daaf69bf57471b175d76820b129872dba05dbcc46bc",
+      "changed_pixels": 17,
+      "status": "partial_fidelity",
+      "exceptions": [],
+      "image": "/home/maisy/opencode_projects/reverse_kings/.mdx/cross-rom/44b85cfe640c8ab8/hokuto-play/frame-b2b172296c4cc8f55f42a8aa855a57873e888478ec5d0dec6c24ee420196fa41.png"
+    }
+  ],
+  "limitations": [
+    "finite external observations, not whole-game or cycle equivalence",
+    "Cadash unattended title animation remains phase-shifted",
+    "Earthworm Jim and Hokuto checks expose residual pixel mismatches; no all-good claim"
+  ]
+}

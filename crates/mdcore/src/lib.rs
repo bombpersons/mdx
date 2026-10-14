@@ -5,12 +5,17 @@
 //! it. Everything it exposes is deterministic and side-effect free apart from
 //! the artefact files an analysis pass is asked to write.
 
+pub mod cart_hw;
+pub mod cart_db;
+pub mod eeprom;
 pub mod cartridge;
+pub mod audio;
 pub mod cpu;
 pub mod fm;
 pub mod input;
 pub mod memmap;
 pub mod observe;
+pub mod psg;
 pub mod system;
 pub mod vdp;
 pub mod z80;

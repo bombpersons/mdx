@@ -1,11 +1,18 @@
 pub mod boot;
+pub mod state;
 pub mod cpu;
 pub mod disasm;
 pub mod graphics;
 pub mod header;
+pub mod image;
 pub mod input;
 pub mod memory;
 pub mod probe;
 pub mod ram;
 pub mod render;
 pub mod schema;
+pub mod sound_log;
+pub mod template;
+pub mod vgm;
+
+pub mod audio;

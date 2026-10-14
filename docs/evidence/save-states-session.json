@@ -1,0 +1,98 @@
+{
+  "date": "2026-10-14",
+  "feature": "version1 resumable machine states",
+  "operations": [
+    "boot",
+    "trace",
+    "watch",
+    "ram.dump"
+  ],
+  "arguments": [
+    "from_state",
+    "save_state"
+  ],
+  "relative_coordinates": [
+    "frames",
+    "start_frame",
+    "input replay frames",
+    "instruction/start_step budgets"
+  ],
+  "absolute_coordinates": [
+    "reached_frames",
+    "trace/watch frames",
+    "record frame stamps",
+    "master clocks"
+  ],
+  "state_payload": "all modeled CPU/VDP/FM/IO and scheduler fields; no ROM bytes or observer histories",
+  "default_rust_tests": {
+    "passed": 196,
+    "failed": 0,
+    "ignored": 24
+  },
+  "python_tests": {
+    "passed": 4,
+    "failed": 0
+  },
+  "final_transport_tests": {
+    "passed": 7,
+    "includes": [
+      "all18operation CLI/MCP parity",
+      "concurrent state loads",
+      "allfouroperation state CLIflags",
+      "plainstring optional from_state schemas",
+      "wrongROM/version/device rejection before output",
+      "project-local lookup/import",
+      "preserved branch override disclosure"
+    ]
+  },
+  "goldens": {
+    "distinct_images": 27,
+    "passed": true,
+    "cases": [
+      5,
+      17,
+      7
+    ],
+    "overlap": 2,
+    "binary_sha256": "de41bcfa27e8ab5bcd0480b948961dced77b39ec6bae064738a53fd83e56d32f",
+    "note": "Combined engine/state release before the final coverage-only disclosure for inherited branch overrides"
+  },
+  "cadash": {
+    "schema": "mdx.state-smoke.v1",
+    "binary_sha256": "33e2b3c0721aa75e5ebe3158e3c053998975babcd33161ddc61c517992b9cbf2",
+    "rom_sha256": "85e0782411cf50ea92a9982dac1942679f738d46a58fdda5d7d82b943512afd8",
+    "input_sha256": "761db440f9d2a5d8ade8738cfb4a86e3fded7c058a5f23ebb7673c08cec4b77c",
+    "split_frame": 2700,
+    "final_frame": 4500,
+    "state_bytes": 373772,
+    "full_state_equal": true,
+    "memory_equal": true,
+    "screenshot_equal": true,
+    "zero_step_ram_state_equal": true,
+    "boot_trace_watch_state_equal": true,
+    "uninterrupted_steps": 43583227,
+    "checkpoint_steps": 26142276,
+    "resumed_steps": 17440951,
+    "extended_frame": 9000,
+    "extended_steps": 43847837,
+    "checkpoint_state": "sha256:2adb3869168eeefd4edf33175193cf2b82503c9718eec7587fb3e90567724d22",
+    "final_state": "sha256:5f7301a08170b82c9b4fdeefd49eea2e998330ce8e59655fd56e4025281bd15a",
+    "chained_final_frame": 13500,
+    "chained_last_steps": 43847804,
+    "chained_total_steps": 131278868
+  },
+  "final_release": {
+    "binary_sha256": "07c56badea9ae0cdb9c21e6477b8ac91ff4bcc9a76a7301762811f2a17e3ab5e",
+    "tools": 18,
+    "resumed_machine_state_matches_validated_release": true,
+    "zero_step_state_unchanged": true
+  },
+  "local_evidence": ".mdx/save-states/",
+  "limitations": [
+    "States model current mdcore behavior, not hardware or audio equivalence",
+    "PSG synthesis and unimplemented mapper/device behavior are not added",
+    "Cadash Z80 VBlank interrupt and KB Z80 bus contention remain open",
+    "Format/engine compatibility is version-bound; no future-build compatibility promise",
+    "Commercial ROM/memory artifacts stay local and ignored; no oracle/input/reference changes"
+  ]
+}

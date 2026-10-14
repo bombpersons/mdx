@@ -14,8 +14,9 @@ use mdcore::cpu::bus::Bus as _;
 use mdcore::cpu::m68000::M68000;
 use mdcore::cpu::status::StatusRegister;
 use mdcore::SparseBus;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -52,6 +53,8 @@ pub struct PerFile {
 #[serde(rename_all = "snake_case")]
 pub struct ConformanceData {
     pub source_files: Vec<FixtureIdentity>,
+    /// Declared upstream provenance for bundled subsets, not hashes verified against upstream files.
+    pub bundled_sources: Vec<BundledSource>,
     pub termination: String,
     pub failure_details_omitted: usize,
     pub cycles_compared: bool,
@@ -72,6 +75,107 @@ pub struct FixtureIdentity {
     pub file: String,
     pub file_sha256: String,
     pub compressed_bytes: usize,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BundledSource {
+    pub file: String,
+    pub sha256: String,
+    pub cases: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BundleEntry {
+    file: String,
+    case: Value,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BundleInput {
+    sources: Vec<BundledSource>,
+    cases: Vec<BundleEntry>,
+}
+
+struct Bundle {
+    sources: Vec<BundledSource>,
+    cases: BTreeMap<String, Vec<Value>>,
+    identity: FixtureIdentity,
+}
+
+fn load_bundle(path: &Path) -> Result<Bundle, Failure> {
+    let bytes = crate::artifacts::read_bounded(path, 64 * 1024 * 1024)?;
+    let input: BundleInput =
+        serde_json::from_slice(&bytes).map_err(|e| invalid("fixture_invalid", &e.to_string()))?;
+    if input.cases.is_empty() || input.sources.is_empty() {
+        return Err(invalid(
+            "fixture_invalid",
+            "bundle must contain sources and cases",
+        ));
+    }
+    if input.cases.len() > 100000 || input.sources.len() > MAX_FILES {
+        return Err(invalid(
+            "limit_exceeded",
+            "bundle allows <= 100000 cases and <= 4096 sources",
+        ));
+    }
+    let mut declared = BTreeSet::new();
+    let mut files = BTreeSet::new();
+    for source in &input.sources {
+        if source.file.is_empty()
+            || !files.insert(source.file.clone())
+            || source.sha256.len() != 64
+            || !source.sha256.bytes().all(|b| b.is_ascii_hexdigit())
+            || source.cases.is_empty()
+        {
+            return Err(invalid(
+                "fixture_invalid",
+                "invalid or duplicate bundled source",
+            ));
+        }
+        for name in &source.cases {
+            if !declared.insert((source.file.clone(), name.clone())) {
+                return Err(invalid(
+                    "fixture_invalid",
+                    "duplicate declared bundled case",
+                ));
+            }
+        }
+    }
+    let mut cases: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+    for entry in input.cases {
+        let name = entry.case["name"]
+            .as_str()
+            .ok_or_else(|| invalid("fixture_invalid", "missing bundled case name"))?;
+        if !declared.remove(&(entry.file.clone(), name.to_owned())) {
+            return Err(invalid(
+                "fixture_invalid",
+                "bundled case is duplicate or missing from source provenance",
+            ));
+        }
+        cases.entry(entry.file).or_default().push(entry.case);
+    }
+    if !declared.is_empty() {
+        return Err(invalid(
+            "fixture_invalid",
+            "declared bundled cases are missing",
+        ));
+    }
+    Ok(Bundle {
+        sources: input.sources,
+        cases,
+        identity: FixtureIdentity {
+            file: path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into(),
+            file_sha256: crate::artifacts::digest(&bytes),
+            compressed_bytes: bytes.len(),
+        },
+    })
 }
 
 pub fn run(
@@ -106,39 +210,52 @@ pub fn run_controlled(
             "failure detail limit must be <= 4096",
         ));
     }
-    let dir = suite.join("v1");
-    if !dir.is_dir() {
+    let bundle = if suite.is_file() {
+        Some(load_bundle(suite)?)
+    } else {
+        None
+    };
+    let dir = if bundle.is_some() {
+        suite.to_path_buf()
+    } else {
+        suite.join("v1")
+    };
+    if bundle.is_none() && !dir.is_dir() {
         return Err(Failure {
             code: "suite_not_found".into(),
             message: format!("no v1 directory under {}", suite.display()),
             remediation: Some(
                 "git clone --depth 1 https://github.com/SingleStepTests/680x0.git \
-                 <path>; the expected layout is <path>/68000/v1/*.json.gz"
+                 <path>; pass <path>/68000 (contains v1/*.json.gz), or a local bundled regression JSON file under crates/mdx/testdata"
                     .into(),
             ),
         });
     }
 
-    let entries: Vec<_> = fs::read_dir(&dir)
-        .map_err(|e| Failure {
-            code: "suite_unreadable".into(),
-            message: e.to_string(),
-            remediation: None,
-        })?
-        .take(MAX_FILES + 1)
-        .collect::<Result<_, _>>()
-        .map_err(|e| invalid("suite_unreadable", &e.to_string()))?;
-    if entries.len() > MAX_FILES {
-        return Err(invalid(
-            "limit_exceeded",
-            "suite directory must contain <= 4096 entries",
-        ));
-    }
-    let mut names: Vec<String> = entries
-        .into_iter()
-        .map(|e| e.file_name().to_string_lossy().to_string())
-        .filter(|n| n.ends_with(".json.gz"))
-        .collect();
+    let mut names: Vec<String> = if let Some(bundle) = &bundle {
+        bundle.cases.keys().cloned().collect()
+    } else {
+        let entries: Vec<_> = fs::read_dir(&dir)
+            .map_err(|e| Failure {
+                code: "suite_unreadable".into(),
+                message: e.to_string(),
+                remediation: None,
+            })?
+            .take(MAX_FILES + 1)
+            .collect::<Result<_, _>>()
+            .map_err(|e| invalid("suite_unreadable", &e.to_string()))?;
+        if entries.len() > MAX_FILES {
+            return Err(invalid(
+                "limit_exceeded",
+                "suite directory must contain <= 4096 entries",
+            ));
+        }
+        entries
+            .into_iter()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.ends_with(".json.gz"))
+            .collect()
+    };
     names.sort();
 
     let selected: Vec<String> = names
@@ -174,18 +291,32 @@ pub fn run_controlled(
             termination = reason;
             break;
         }
-        let path = dir.join(name);
-        let (passed, total, available, identity) = run_file(
-            &path,
-            name,
-            max_failures,
-            relocate,
-            compare_cycles,
-            &mut failures,
-            context,
-            MAX_CASES - cases_run,
-        )?;
-        source_files.push(identity);
+        let (passed, total, available) = if let Some(bundle) = &bundle {
+            run_cases(
+                &bundle.cases[name],
+                name,
+                max_failures,
+                relocate,
+                compare_cycles,
+                &mut failures,
+                context,
+                MAX_CASES - cases_run,
+            )?
+        } else {
+            let path = dir.join(name);
+            let (passed, total, available, identity) = run_file(
+                &path,
+                name,
+                max_failures,
+                relocate,
+                compare_cycles,
+                &mut failures,
+                context,
+                MAX_CASES - cases_run,
+            )?;
+            source_files.push(identity);
+            (passed, total, available)
+        };
         cases_run += total;
         cases_passed += passed;
         per_file.push(PerFile {
@@ -204,9 +335,18 @@ pub fn run_controlled(
     // Worst first: the response should open with what is still broken.
     per_file.sort_by(|a, b| b.failed.cmp(&a.failed).then(a.file.cmp(&b.file)));
 
+    let bundled = bundle.is_some();
+    let bundled_sources = if let Some(bundle) = bundle {
+        source_files.push(bundle.identity);
+        bundle.sources
+    } else {
+        Vec::new()
+    };
+
     let cases_failed = cases_run - cases_passed;
     let data = ConformanceData {
         source_files,
+        bundled_sources,
         termination: termination.into(),
         failure_details_omitted: cases_failed.saturating_sub(failures.len()),
         cycles_compared: compare_cycles,
@@ -268,6 +408,10 @@ pub fn run_controlled(
     coverage.limits.push(
         "suite entries <= 4096; cases attempted <= 20000000; cases per file <= 100000".into(),
     );
+    if bundled {
+        coverage.conditions.push("local bundled regression subset; files_total counts bundled instruction groups, not upstream suite files".into());
+        coverage.limitations.push("only bundled cases were executed; upstream suite coverage is not implied; bundled_sources hashes are declared provenance, while source_files hashes verify the actual local bundle bytes".into());
+    }
     if termination != "complete" {
         coverage.limitations.push(format!(
             "conformance terminated with {termination}; {} files processed",
@@ -325,6 +469,29 @@ fn run_file(
     }
     let cases: Vec<Value> =
         serde_json::from_slice(&raw).map_err(|e| invalid("fixture_invalid", &e.to_string()))?;
+    let (passed, attempted, total) = run_cases(
+        &cases,
+        name,
+        max_failures,
+        relocate,
+        compare_cycles,
+        out,
+        context,
+        remaining_cases,
+    )?;
+    Ok((passed, attempted, total, identity))
+}
+
+fn run_cases(
+    cases: &[Value],
+    name: &str,
+    max_failures: usize,
+    relocate: bool,
+    compare_cycles: bool,
+    out: &mut Vec<Failure_>,
+    context: &crate::context::Context,
+    remaining_cases: usize,
+) -> Result<(usize, usize, usize), Failure> {
     if cases.is_empty() {
         return Err(invalid("fixture_invalid", "fixture file contains no cases"));
     }
@@ -338,7 +505,7 @@ fn run_file(
     let mut passed = 0usize;
     let total = cases.len();
     let mut attempted = 0;
-    for case in &cases {
+    for case in cases {
         if attempted >= remaining_cases {
             break;
         }
@@ -355,7 +522,7 @@ fn run_file(
         }
         attempted += 1;
     }
-    Ok((passed, attempted, total, identity))
+    Ok((passed, attempted, total))
 }
 
 fn invalid(code: &str, message: &str) -> Failure {

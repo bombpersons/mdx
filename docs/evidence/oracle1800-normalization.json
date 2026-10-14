@@ -1,0 +1,25 @@
+{
+  "snapshot": "/home/maisy/opencode_projects/reverse_kings/.mdx/oracle1800-vdp/snapshot.json",
+  "source": {
+    "path": "/home/maisy/opencode_projects/reverse_kings/.mdx/oracle1800-state.bin",
+    "sha256": "181c52e55c26a7661256be5ef9a160f8d4df522b5a33a383be54e69749952147",
+    "profile": "GPGX 1.7.6 MD little-endian state layout"
+  },
+  "memory_artifacts": {
+    "vram": {
+      "path": "/home/maisy/opencode_projects/reverse_kings/.mdx/oracle1800-vdp/vram.bin",
+      "bytes": 65536,
+      "sha256": "dc51623a9a7b53889d4459e2c8a48ddf66f1965beaa1da504065566894e915c7"
+    },
+    "cram": {
+      "path": "/home/maisy/opencode_projects/reverse_kings/.mdx/oracle1800-vdp/cram.bin",
+      "bytes": 128,
+      "sha256": "57d11f6d0ac11f04118acd411e4c4b37ff35f7ba25fd8880248656c3857dc8f4"
+    },
+    "vsram": {
+      "path": "/home/maisy/opencode_projects/reverse_kings/.mdx/oracle1800-vdp/vsram.bin",
+      "bytes": 80,
+      "sha256": "5d5f96d0a6af54aa208bc406ad30eed892f9daa2263b82cdb82cf18e61d9e0d6"
+    }
+  }
+}

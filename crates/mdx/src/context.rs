@@ -10,6 +10,8 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
 pub struct Context {
+    /// Base directory captured for this call; never changed process-wide.
+    pub root: PathBuf,
     pub cancellation: CancellationToken,
     pub store: PathBuf,
     pub progress: Option<Arc<dyn Fn(u64, u64) + Send + Sync>>,
@@ -19,6 +21,7 @@ pub struct Context {
 impl Default for Context {
     fn default() -> Self {
         Self {
+            root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             cancellation: CancellationToken::new(),
             store: PathBuf::from(".mdx/artifacts"),
             progress: None,

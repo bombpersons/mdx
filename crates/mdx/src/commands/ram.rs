@@ -8,7 +8,7 @@
 //! * `--range ADDR:LEN` — a hex dump, for reading a region you already know is
 //!   interesting.
 //!
-//! Addresses are full 68000 addresses. They are folded into the 64 KiB work-RAM
+//! Addresses are folded offsets or full 68000 work-RAM aliases. They fold into the 64 KiB work-RAM
 //! aperture the same way the bus does it, so a register holding an unmasked
 //! 32-bit value (0xFFFFFFFC, say) addresses the same byte it would on hardware.
 
@@ -16,12 +16,43 @@ use std::path::Path;
 
 use mdcore::cartridge::Cartridge;
 use mdcore::memmap::fold_to_wram;
-use mdcore::system::System;
 use serde::Serialize;
 
 use crate::envelope::{Coverage, Envelope, Failure, Subject, Warning};
 
 pub const TOOL: &str = "mdx/ram-dump";
+
+/// JSON range elements accept integers or explicitly hexadecimal/decimal text.
+#[derive(Debug, serde::Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum RangeValue {
+    Number(u32),
+    Text(String),
+}
+
+impl RangeValue {
+    pub fn parse(&self) -> Result<u32, Failure> {
+        match self {
+            Self::Number(value) => Ok(*value),
+            Self::Text(text) => {
+                let text = text.trim();
+                let value = if let Some(hex) =
+                    text.strip_prefix("0x").or_else(|| text.strip_prefix("0X"))
+                {
+                    u32::from_str_radix(hex, 16)
+                } else {
+                    text.parse::<u32>()
+                };
+                value.map_err(|_| {
+                    crate::artifacts::failure(
+                        "invalid_arguments",
+                        "RAM range elements must be u32 integers, decimal text or 0x-prefixed hex",
+                    )
+                })
+            }
+        }
+    }
+}
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -44,6 +75,9 @@ pub struct HexRow {
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct RamData {
+    pub state_artifact: Option<crate::artifacts::Artifact>,
+    pub starting_frame: u64,
+    pub elapsed_frames: u64,
     pub termination: String,
     pub exceptions: u64,
     pub instructions: u64,
@@ -85,12 +119,44 @@ pub fn run_controlled(
     range: Option<(u32, u32)>,
     context: &crate::context::Context,
 ) -> Result<(Envelope<RamData>, i32), Failure> {
+    run_resumable(
+        rom,
+        instructions,
+        stop_at,
+        find,
+        range,
+        None,
+        false,
+        super::state::RegionChoice::Auto,
+        context,
+    )
+}
+
+pub fn run_resumable(
+    rom: &Path,
+    instructions: u64,
+    stop_at: Option<u32>,
+    find: Option<u32>,
+    range: Option<(u32, u32)>,
+    from_state: Option<&str>,
+    save_state: bool,
+    region: super::state::RegionChoice,
+    context: &crate::context::Context,
+) -> Result<(Envelope<RamData>, i32), Failure> {
     if instructions > 100_000_000 || range.is_some_and(|(_, len)| len > 65536) {
         return Err(Failure {
             code: "limit_exceeded".into(),
             message: "RAM inspection allows at most 100M steps and one 64 KiB aperture".into(),
             remediation: None,
         });
+    }
+    if range.is_some_and(|(addr, _)| {
+        addr > 0xFFFF && mdcore::memmap::region(addr) != mdcore::Region::Wram
+    }) {
+        return Err(crate::artifacts::failure(
+            "invalid_arguments",
+            "range address must be a folded WRAM offset or a full work-RAM alias",
+        ));
     }
     context.check()?;
     let cart = Cartridge::load(rom).map_err(|e| Failure {
@@ -106,7 +172,8 @@ pub fn run_controlled(
         architecture: Some("m68000".into()),
     };
 
-    let mut system = System::new(cart);
+    let mut system = super::state::load(cart, from_state, region, context)?;
+    let starting_frame = system.vdp.frame;
     let mut executed = 0u64;
     let mut stopped_at = None;
     let mut termination = "instruction_budget";
@@ -166,8 +233,8 @@ pub fn run_controlled(
                 s.push_str(&format!("{:02X} ", wram[(off + i) % wram.len()]));
             }
             rows.push(HexRow {
-                address: format!("0x{:08X}", 0x00FF_0000u32.wrapping_add(off as u32)),
-                wram_offset: format!("0x{off:04X}"),
+                address: format!("0x{:08X}", 0x00FF_0000u32 + (off % wram.len()) as u32),
+                wram_offset: format!("0x{:04X}", off % wram.len()),
                 bytes: s.trim_end().to_string(),
             });
             off += take;
@@ -186,6 +253,9 @@ pub fn run_controlled(
     }
 
     let data = RamData {
+        state_artifact: super::state::save(&system, save_state, context)?,
+        starting_frame,
+        elapsed_frames: system.vdp.frame - starting_frame,
         termination: termination.into(),
         exceptions,
         instructions: executed,
@@ -206,6 +276,12 @@ pub fn run_controlled(
         "instruction budget counts attempted CPU steps, including exceptions and interrupt entry"
             .into(),
     );
+    if !system.cpu.branch_override.is_empty() {
+        coverage.limitations.push("analyst-forced branch outcomes preserved from machine state; modified-execution diagnostic".into());
+    }
+    if let Some((addr, len)) = range {
+        coverage.conditions.push(format!("WRAM range at folded offset 0x{:04X}, {len} bytes; wraps at 64 KiB; row addresses use canonical 0xFF0000 aliases", fold_to_wram(addr)));
+    }
     if termination == "cancelled"
         || termination == "timeout"
         || (stop_at.is_some() && stopped_at.is_none())

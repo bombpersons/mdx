@@ -1,0 +1,70 @@
+{
+  "schema": "kb.dma.finite-visual-comparison.v1",
+  "rom_sha256": "5fd1494a6a47e33d85b22ebbc26a1156f31bb539cf54d4e109e1bcbddef8b4eb",
+  "oracle_core_sha256": "1ba3f40ed6aea2511b9c0d48d079283a884ac8667b916f772443f717e49db04f",
+  "checks": {
+    "short_input_before_dma": {
+      "left": {
+        "path": ".mdx/kb-move4500/frame-4500.png",
+        "sha256": "d4064f8a417c33e6fa9838c5cdfbd668ddc1d817cbb02c82df69530807287738"
+      },
+      "right": {
+        "path": "testdata/oracle_kb_move4500_rgb.png",
+        "sha256": "403cedf22c6d8bf328e040fcdb2e69d7be748339423ae868ee7222c0c55bae3c"
+      },
+      "pixels": 71680,
+      "different_pixels": 49
+    },
+    "short_input_after_dma": {
+      "left": {
+        "path": ".mdx/move4500-dma-stalls/frame-4500.png",
+        "sha256": "ada55aa4f67000ba58d62d5abf7a498cbf5f9c12eaeda019b7c85762eef2e497"
+      },
+      "right": {
+        "path": "testdata/oracle_kb_move4500_rgb.png",
+        "sha256": "403cedf22c6d8bf328e040fcdb2e69d7be748339423ae868ee7222c0c55bae3c"
+      },
+      "pixels": 71680,
+      "different_pixels": 0
+    },
+    "sustained_walking_after_dma": {
+      "left": {
+        "path": ".mdx/walk4500/frame-4500.png",
+        "sha256": "5640528c18fac5c73e3107228f333bb2faedfe6b1683665d8a870c3d684693e4"
+      },
+      "right": {
+        "path": "testdata/oracle_kb_walk4500_rgb.png",
+        "sha256": "b8fb8f013be04a5663fc7e907d5b2367c4c1822560deab222bb83a08a7eca191"
+      },
+      "pixels": 71680,
+      "different_pixels": 0
+    },
+    "rea_oracle_repetition": {
+      "left": {
+        "path": ".mdx/rea-oracle-walk4500.png",
+        "sha256": "b8fb8f013be04a5663fc7e907d5b2367c4c1822560deab222bb83a08a7eca191"
+      },
+      "right": {
+        "path": "testdata/oracle_kb_walk4500_rgb.png",
+        "sha256": "b8fb8f013be04a5663fc7e907d5b2367c4c1822560deab222bb83a08a7eca191"
+      },
+      "pixels": 71680,
+      "different_pixels": 0
+    },
+    "credits_after_dma_unresolved": {
+      "left": {
+        "path": ".mdx/credits1800-dma-stalls/frame-1800.png",
+        "sha256": "805259b5b7d665bcc73410e707e3b6d31dc0150f92d5fcba88111bfc77993036"
+      },
+      "right": {
+        "path": "docs/evidence/oracle-kb-frame1800.png",
+        "sha256": "fca8cb9c892eb05d75ec563ac8feb2d09c93068ee32328b1e46f4834c76e096e"
+      },
+      "pixels": 71680,
+      "different_pixels": 4412
+    }
+  },
+  "limitations": [
+    "finite frame checkpoints only; credits remains unresolved; no whole-game or cycle-equivalence claim"
+  ]
+}

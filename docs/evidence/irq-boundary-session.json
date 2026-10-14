@@ -1,0 +1,116 @@
+{
+  "date": "2026-10-13",
+  "release_binary_sha256": "9ccf1e3b9d548b9f2d2cda9b6b862a6d730ff9c180714afe95d8d19ff5e09067",
+  "active_changes": [
+    "SR/CCR MOVE addressing-mode timing (30 legal forms)",
+    "phase-dependent autovector E-clock entry",
+    "nonzero register-count shift/rotate refresh suppression"
+  ],
+  "default_rust_tests": {
+    "passed": 185,
+    "failed": 0,
+    "ignored": 23
+  },
+  "python_observer_tests": {
+    "passed": 4,
+    "failed": 0
+  },
+  "irq_samples": {
+    "equal": 640,
+    "total": 640,
+    "default_regressions_enabled": true
+  },
+  "shift_samples": {
+    "equal": 3840,
+    "total": 3840,
+    "default_regression_enabled": true
+  },
+  "first_irq_boundary": {
+    "binary_sha256": "e4af78bcd57aafc6f857bed8e5c1811a9ab398232f29f92b5e0ac165475de99a",
+    "oracle_core_sha256": "95b5663389c1fb92e66a784dd60c0b3db4a92b42102d905430352772589f8780",
+    "total": 20,
+    "entry_clocks_equal": 20,
+    "entry_registers_equal": 20,
+    "initial_dispatches_equal": 20,
+    "hv_equal": 20
+  },
+  "first_divergence": {
+    "instruction": "MOVE #$2000,SR",
+    "old_cpu_clocks": 12,
+    "reference_cpu_clocks": 16,
+    "h32_nops1_following_dispatch_old_master": 784826,
+    "following_dispatch_reference_master": 784854,
+    "first_handler_fixed_frame_master": 1122
+  },
+  "engine_image_gates": {
+    "distinct_checkpoints": 27,
+    "original_tests_passed": 12,
+    "survey_checkpoints_passed": 17,
+    "status_eclock_passed": true,
+    "status_eclock_shift_passed": true,
+    "validated_combined_binary_sha256": "a858cdf67a525458a0e6ceb6815527c942c0b8ed901e9e22300469e2822bd600",
+    "log": ".mdx/irq-boundary/combined-goldens.log",
+    "phase": "combined engine; later changes only format the status-cost block and simplify request path schemas"
+  },
+  "final_mcp_smoke": {
+    "binary_sha256": "9ccf1e3b9d548b9f2d2cda9b6b862a6d730ff9c180714afe95d8d19ff5e09067",
+    "tools": 18,
+    "cartridges": 4,
+    "walking": true,
+    "report": ".mdx/irq-boundary/final-mcp.json"
+  },
+  "path_schema_compatibility": {
+    "fields": [
+      "project_root",
+      "artifact_store"
+    ],
+    "previous_type": [
+      "string",
+      "null"
+    ],
+    "advertised_type": "string",
+    "optional": true,
+    "all_advertised_tools_checked": 18,
+    "transport_and_lib_tests": {
+      "passed": 11,
+      "failed": 0,
+      "ignored": 0
+    },
+    "ren_stimpy_boot": {
+      "reached_frames": 120,
+      "termination": "frame_target",
+      "instructions": 1497724
+    },
+    "opencode_version": "1.18.35",
+    "reported_model": "LongCat 2.5 Preview Free",
+    "model_generation_reproduced": false,
+    "client_action": "Restart OpenCode/reconnect mdx to refresh cached tools"
+  },
+  "oracle": {
+    "original_cpu_sha256": "8c09b9d86e8c77366eff430f62c3b5742adce1ccdee849c246e24dcba74fcf15",
+    "original_cpu_unchanged": true,
+    "observation_core_sha256": "95b5663389c1fb92e66a784dd60c0b3db4a92b42102d905430352772589f8780",
+    "manifest": "cache/oracle/resume-timing-trace/trace-manifest.json"
+  },
+  "actual_kb_first_hv_reads": {
+    "baseline": [
+      "9C89",
+      "A036"
+    ],
+    "integrated": [
+      "9C9D",
+      "A04A"
+    ],
+    "oracle": [
+      "9C9C",
+      "A049"
+    ]
+  },
+  "limitations": [
+    "Real-game live RNG and sound state still differ.",
+    "Two large active-VRAM DMA profiles remain explicit ignored gaps.",
+    "Finite synthetic traces and image gates do not establish whole-machine or hardware equivalence.",
+    "Direct MCP schema/dispatch is tested; LongCat/OpenCode missing-quote generation is not reproduced.",
+    "All pre-existing work preserved; no commits or commercial-asset additions."
+  ]
+}

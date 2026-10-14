@@ -1,0 +1,836 @@
+{
+  "schema": "mdx.fidelity-review.v1",
+  "date": "2026-10-13",
+  "toolkit_root": "/home/maisy/opencode_projects/mdx",
+  "toolkit_base_commit": "e8e8dcb5598d577619502d9d6dae3f188b7c4f46",
+  "uncommitted_changes": true,
+  "binary_sha256": "76a007a92185e52684bbbae3100043055d7a05a32f4edba76e8686f324bdb44c",
+  "source_sha256": {
+    "crates/mdcore/src/cpu/exec.rs": "f9a88fe487ae18a9939e49adc9ee4065ac17232166bf21dda941e23121193624",
+    "crates/mdcore/src/cpu/disasm.rs": "b6290c82f138b62146414412aed7a51f6848e7b48beb6dc065804aec57aabbb3",
+    "crates/mdcore/src/cpu/ea.rs": "41a33addd6d71b47d305923ad155c6f76fcc447ea145c1b435070a60235a051a",
+    "crates/mdcore/src/system.rs": "a91f2c55df5390f7453a1429589c3103955901a254ef5ab411c02636394fac51",
+    "crates/mdcore/src/vdp.rs": "adbad7912ee28450f32a54d31f731845550b987b3bce3f973e2c7a1af8d24639",
+    "crates/mdcore/src/fm.rs": "bcb7fcab75d822e4e64f119a58c769a8dcb3ef3650df738b61ff5e18d489e81c",
+    "crates/mdcore/src/memmap.rs": "2b82447f16911ba78859bebe198024a9f966f64a6a6446ab531ac34d595af2e5",
+    "crates/mdx/src/commands/boot.rs": "c12dee53395657b5d900bb79f55c473c8b676ad4431e8c80922ebac5cfad1816",
+    "crates/mdx/src/commands/cpu.rs": "2e2fa91e01062cfba1850f741015aec796bae29cf037e286ff4c2f0a1c7b8e61",
+    "crates/mdx/src/commands/disasm.rs": "49aa4dc6ce992e9da096fde02cf4972c9c17cff2e37882ce75e9bae6ec149ca0",
+    "crates/mdx/src/commands/header.rs": "7e19b1223d31d8ae1e993b89452ab981b2b657e99f921c8e25804fbc4f043017",
+    "crates/mdx/src/commands/input.rs": "7057d63804c5b9018ebb61c06b23be31ab23287c32f3b2a8b2428b03b8478c06",
+    "crates/mdx/src/commands/ram.rs": "ce93ea34ced3e1118d31207117e9b9d7dcaae09de98fefe815ceb8bdc1cb9639",
+    "crates/mdx/src/operations.rs": "f27d218bccad8b3d174c3f6eb02a483764dbcfa9359224665e22fb4bbd9440a6"
+  },
+  "oracle_core_sha256": "1ba3f40ed6aea2511b9c0d48d079283a884ac8667b916f772443f717e49db04f",
+  "oracle_wrapper_sha256": "d2b962b5163680634dd9f2aea9ebb80b1a35b7ffa3c229c1d56c5fd471ae6db6",
+  "oracle_abi_sha256": "99f45066aea602e452db3387f50645c79e50f2fa4f15d0e58adcd3f2e7fdda30",
+  "release_tests": {
+    "passed": 156,
+    "failed": 0,
+    "ignored": 9
+  },
+  "python_observer_tests": {
+    "passed": 4,
+    "failed": 0
+  },
+  "original_pixel_gates": {
+    "kings_bounty": 7,
+    "cadash": 5,
+    "changed_pixels": 0,
+    "references_and_inputs_unchanged": true
+  },
+  "new_survey_cases": 17,
+  "distinct_pixel_checkpoints": 27,
+  "cases": [
+    {
+      "game": "hokuto",
+      "frame": 60,
+      "input": null,
+      "rom_sha256": "3318f7dde3fa54c69b3144a00abe7501c42277609dc0743566f246428180f4a1",
+      "input_sha256": null,
+      "changed_pixels": 0,
+      "pixel_bounds": null,
+      "pixel_samples": [],
+      "memory": {
+        "wram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "vram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "cram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "vsram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        }
+      },
+      "registers_equal": true,
+      "exceptions": [],
+      "directory": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/hokuto-60",
+      "image": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/hokuto-60/mdx/frame-dbf8fdd7344bcf27da0df0558ccf33488341c332796a5019ada5cafdcb852dad.png",
+      "oracle": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/hokuto-60/oracle.png",
+      "image_sha256": "dbf8fdd7344bcf27da0df0558ccf33488341c332796a5019ada5cafdcb852dad",
+      "oracle_sha256": "f37fc32c68c223a1c6198c376e6bc3977fc4f488da12c71a67fe41271ffbc027",
+      "oracle_state_sha256": "88489ca43feae789d7db731d06fd83a8565af3dd33a5ed2d966af6dfa4359c3a",
+      "reached_frame": 60,
+      "instructions": 903934
+    },
+    {
+      "game": "hokuto",
+      "frame": 300,
+      "input": null,
+      "rom_sha256": "3318f7dde3fa54c69b3144a00abe7501c42277609dc0743566f246428180f4a1",
+      "input_sha256": null,
+      "changed_pixels": 0,
+      "pixel_bounds": null,
+      "pixel_samples": [],
+      "memory": {
+        "wram": {
+          "changed_bytes": 1,
+          "first_offsets": [
+            65015
+          ]
+        },
+        "vram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "cram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "vsram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        }
+      },
+      "registers_equal": true,
+      "exceptions": [],
+      "directory": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/hokuto-300",
+      "image": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/hokuto-300/mdx/frame-34fb2e07a25f336b04eae5e0ebba1ea0f45d8603f47cd83120035fe899429e39.png",
+      "oracle": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/hokuto-300/oracle.png",
+      "image_sha256": "34fb2e07a25f336b04eae5e0ebba1ea0f45d8603f47cd83120035fe899429e39",
+      "oracle_sha256": "9f98411cbe812ae882558dd437951ca83357cd2688103af7f585f9e8f0c2e212",
+      "oracle_state_sha256": "599ba4d0fa84f3778fd24ea693eddef670064465fb6de71d2ecb6241c2d3bc19",
+      "reached_frame": 300,
+      "instructions": 3653269
+    },
+    {
+      "game": "hokuto",
+      "frame": 1200,
+      "input": null,
+      "rom_sha256": "3318f7dde3fa54c69b3144a00abe7501c42277609dc0743566f246428180f4a1",
+      "input_sha256": null,
+      "changed_pixels": 0,
+      "pixel_bounds": null,
+      "pixel_samples": [],
+      "memory": {
+        "wram": {
+          "changed_bytes": 1,
+          "first_offsets": [
+            65015
+          ]
+        },
+        "vram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "cram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "vsram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        }
+      },
+      "registers_equal": true,
+      "exceptions": [],
+      "directory": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/hokuto-1200",
+      "image": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/hokuto-1200/mdx/frame-55f9b4b9ecd4d850f5be7a11914ef5a427f0f94e153816d1075eda6cc0e90d96.png",
+      "oracle": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/hokuto-1200/oracle.png",
+      "image_sha256": "55f9b4b9ecd4d850f5be7a11914ef5a427f0f94e153816d1075eda6cc0e90d96",
+      "oracle_sha256": "7662d73597dd3d33c67f53a3e6fbcfdfc46f2f8d762739eeae9aca59bda156c5",
+      "oracle_state_sha256": "6072eb72953030b619308dbcbd427ede7524e7561f505c7e0f0538aeafab6919",
+      "reached_frame": 1200,
+      "instructions": 13926443
+    },
+    {
+      "game": "hokuto",
+      "frame": 2800,
+      "input": "cross_rom_start_replay.json",
+      "rom_sha256": "3318f7dde3fa54c69b3144a00abe7501c42277609dc0743566f246428180f4a1",
+      "input_sha256": "956a209ded9e04c4ef8c2daaf69bf57471b175d76820b129872dba05dbcc46bc",
+      "changed_pixels": 0,
+      "pixel_bounds": null,
+      "pixel_samples": [],
+      "memory": {
+        "wram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "vram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "cram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "vsram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        }
+      },
+      "registers_equal": true,
+      "exceptions": [],
+      "directory": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/hokuto-2800",
+      "image": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/hokuto-2800/mdx/frame-beb4dc065df4fdcf956205599c1c345907b2eea66425785e7d07d04f900cc67e.png",
+      "oracle": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/hokuto-2800/oracle.png",
+      "image_sha256": "beb4dc065df4fdcf956205599c1c345907b2eea66425785e7d07d04f900cc67e",
+      "oracle_sha256": "ef8275ac083c0639143a173578deb946fbf55b0c69660bf90c3ab6e1091615a5",
+      "oracle_state_sha256": "700da2d8629451b20e5293e457d267d79b6a6c5a1f41a20f5d8b5aa55637eada",
+      "reached_frame": 2800,
+      "instructions": 32062846
+    },
+    {
+      "game": "cadash",
+      "frame": 600,
+      "input": null,
+      "rom_sha256": "85e0782411cf50ea92a9982dac1942679f738d46a58fdda5d7d82b943512afd8",
+      "input_sha256": null,
+      "changed_pixels": 0,
+      "pixel_bounds": null,
+      "pixel_samples": [],
+      "memory": {
+        "wram": {
+          "changed_bytes": 5,
+          "first_offsets": [
+            411,
+            413,
+            415,
+            417,
+            421
+          ]
+        },
+        "vram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "cram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "vsram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        }
+      },
+      "registers_equal": true,
+      "exceptions": [],
+      "directory": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/cadash-600",
+      "image": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/cadash-600/mdx/frame-ec7dffd128cff58935aa6e30b1d4dcb7635bf2e04fdb56a554c2a2a5fea3be6b.png",
+      "oracle": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/cadash-600/oracle.png",
+      "image_sha256": "ec7dffd128cff58935aa6e30b1d4dcb7635bf2e04fdb56a554c2a2a5fea3be6b",
+      "oracle_sha256": "89e0a5f81fa4fa579ec41528226ac6a820a25ea23eb696c99102c5480b1fb4c4",
+      "oracle_state_sha256": "6d4445dacede03b4b63688c1bf190b988217816f58aa250ff14dd7810575ba3e",
+      "reached_frame": 600,
+      "instructions": 5905905
+    },
+    {
+      "game": "cadash",
+      "frame": 5500,
+      "input": "cadash_exit_replay.json",
+      "rom_sha256": "85e0782411cf50ea92a9982dac1942679f738d46a58fdda5d7d82b943512afd8",
+      "input_sha256": "c8b39cc84f51ea5e3a6bb546ae34c23bfb26b1b25e8db6d6ee0c931c5a46a7d9",
+      "changed_pixels": 0,
+      "pixel_bounds": null,
+      "pixel_samples": [],
+      "memory": {
+        "wram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "vram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "cram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "vsram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        }
+      },
+      "registers_equal": true,
+      "exceptions": [],
+      "directory": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/cadash-5500",
+      "image": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/cadash-5500/mdx/frame-6f2c70a414b69b3f670d1d87258161300028ca8b7e2542acc0b2eeee09f33e61.png",
+      "oracle": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/cadash-5500/oracle.png",
+      "image_sha256": "6f2c70a414b69b3f670d1d87258161300028ca8b7e2542acc0b2eeee09f33e61",
+      "oracle_sha256": "1563f3c8ac68e80b81e717750c130751ea3ef0f72835449b738444b15d15c4f7",
+      "oracle_state_sha256": "05457b5149a16b46b4176a454238007d2c5a72c45510e553ed562a9c0e7f6605",
+      "reached_frame": 5500,
+      "instructions": 53392088
+    },
+    {
+      "game": "ewj",
+      "frame": 1200,
+      "input": null,
+      "rom_sha256": "0fc7b0da6c42fe3b7e942607dae48f6344973127e6e51f2c6ca040d6c7e24044",
+      "input_sha256": null,
+      "changed_pixels": 0,
+      "pixel_bounds": null,
+      "pixel_samples": [],
+      "memory": {
+        "wram": {
+          "changed_bytes": 4,
+          "first_offsets": [
+            63985,
+            64005,
+            64013,
+            64407
+          ]
+        },
+        "vram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "cram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "vsram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        }
+      },
+      "registers_equal": true,
+      "exceptions": [],
+      "directory": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/ewj-1200",
+      "image": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/ewj-1200/mdx/frame-0aeca4e931ba31c3fcd0f1ef1910da1ecc853442ba95c2800748d872c568303f.png",
+      "oracle": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/ewj-1200/oracle.png",
+      "image_sha256": "0aeca4e931ba31c3fcd0f1ef1910da1ecc853442ba95c2800748d872c568303f",
+      "oracle_sha256": "a3229d89955cf7eca772f5a97d10edaa9f739d2db6eececd45d94973cc735ad0",
+      "oracle_state_sha256": "460d5efee773cdeb04034370d39e1726be4663c7f00414aa97caa6f1fc77e1d9",
+      "reached_frame": 1200,
+      "instructions": 12168462
+    },
+    {
+      "game": "ewj",
+      "frame": 2800,
+      "input": "cross_rom_start_replay.json",
+      "rom_sha256": "0fc7b0da6c42fe3b7e942607dae48f6344973127e6e51f2c6ca040d6c7e24044",
+      "input_sha256": "956a209ded9e04c4ef8c2daaf69bf57471b175d76820b129872dba05dbcc46bc",
+      "changed_pixels": 0,
+      "pixel_bounds": null,
+      "pixel_samples": [],
+      "memory": {
+        "wram": {
+          "changed_bytes": 77,
+          "first_offsets": [
+            46277,
+            46279,
+            46281,
+            46283,
+            46285,
+            46287,
+            46289,
+            46291,
+            46293,
+            46295,
+            46297,
+            46299,
+            46301,
+            46303,
+            46305,
+            46307
+          ]
+        },
+        "vram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "cram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "vsram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        }
+      },
+      "registers_equal": true,
+      "exceptions": [],
+      "directory": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/ewj-2800",
+      "image": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/ewj-2800/mdx/frame-fed6606e7dd0f9156531148e31c7e7332db193418cb2fcb714925ff32be9720d.png",
+      "oracle": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/ewj-2800/oracle.png",
+      "image_sha256": "fed6606e7dd0f9156531148e31c7e7332db193418cb2fcb714925ff32be9720d",
+      "oracle_sha256": "c6f8de014dcdd0f087232d7893d6da5f5ac8ab3de938d2502e66007b1b3e7423",
+      "oracle_state_sha256": "6256902af889d1373c1242d1648e6511e162570eb32f6b02bc3e81e365a83575",
+      "reached_frame": 2800,
+      "instructions": 29277183
+    },
+    {
+      "game": "ewj",
+      "frame": 6000,
+      "input": "ewj_play_replay.json",
+      "rom_sha256": "0fc7b0da6c42fe3b7e942607dae48f6344973127e6e51f2c6ca040d6c7e24044",
+      "input_sha256": "003cd93450e446a46cbc4ce213aa3489367469e8bf0c0983470b58466138c7da",
+      "changed_pixels": 0,
+      "pixel_bounds": null,
+      "pixel_samples": [],
+      "memory": {
+        "wram": {
+          "changed_bytes": 150,
+          "first_offsets": [
+            46276,
+            46277,
+            46278,
+            46279,
+            46280,
+            46281,
+            46282,
+            46283,
+            46284,
+            46285,
+            46286,
+            46287,
+            46288,
+            46289,
+            46290,
+            46291
+          ]
+        },
+        "vram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "cram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "vsram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        }
+      },
+      "registers_equal": true,
+      "exceptions": [],
+      "directory": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/ewj-6000",
+      "image": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/ewj-6000/mdx/frame-e9d9c814dd999859709c675d1eaf5b37176d0b8655b60582a778de1288a527d6.png",
+      "oracle": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/ewj-6000/oracle.png",
+      "image_sha256": "e9d9c814dd999859709c675d1eaf5b37176d0b8655b60582a778de1288a527d6",
+      "oracle_sha256": "b4f23f781d85d73ff86e227f705b90684ac441213c144f704e614834ad03541d",
+      "oracle_state_sha256": "c9d79a23ac8a55b7be0f11c79c48f51af0ca9778cae67ac7ef672e2b8aa231af",
+      "reached_frame": 6000,
+      "instructions": 62218352
+    },
+    {
+      "game": "kb",
+      "frame": 1800,
+      "input": null,
+      "rom_sha256": "5fd1494a6a47e33d85b22ebbc26a1156f31bb539cf54d4e109e1bcbddef8b4eb",
+      "input_sha256": null,
+      "changed_pixels": 0,
+      "pixel_bounds": null,
+      "pixel_samples": [],
+      "memory": {
+        "wram": {
+          "changed_bytes": 29,
+          "first_offsets": [
+            35531,
+            35583,
+            35591,
+            35611,
+            35615,
+            35619,
+            35627,
+            35631,
+            35635,
+            35654,
+            35655,
+            35659,
+            35663,
+            35691,
+            35695,
+            35699
+          ]
+        },
+        "vram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "cram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "vsram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        }
+      },
+      "registers_equal": true,
+      "exceptions": [],
+      "directory": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/kb-1800",
+      "image": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/kb-1800/mdx/frame-d2332cb1a6b88763bb232eaa17bbf1f3679dc6a3cac773d345274b359ad49021.png",
+      "oracle": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/kb-1800/oracle.png",
+      "image_sha256": "d2332cb1a6b88763bb232eaa17bbf1f3679dc6a3cac773d345274b359ad49021",
+      "oracle_sha256": "fca8cb9c892eb05d75ec563ac8feb2d09c93068ee32328b1e46f4834c76e096e",
+      "oracle_state_sha256": "6c5067433cdcaecff44320b51f2d8280c4469eaa63b3a26a447a02e46a2b699a",
+      "reached_frame": 1800,
+      "instructions": 18667698
+    },
+    {
+      "game": "kb",
+      "frame": 4500,
+      "input": "kb_walk_replay.json",
+      "rom_sha256": "5fd1494a6a47e33d85b22ebbc26a1156f31bb539cf54d4e109e1bcbddef8b4eb",
+      "input_sha256": "1aeb82b91d912bd70e04c21c025beab1ea978111d38b6d5181f3e683e1a6b6df",
+      "changed_pixels": 0,
+      "pixel_bounds": null,
+      "pixel_samples": [],
+      "memory": {
+        "wram": {
+          "changed_bytes": 1518,
+          "first_offsets": [
+            35531,
+            35584,
+            35585,
+            35588,
+            35589,
+            35592,
+            35593,
+            35596,
+            35597,
+            35604,
+            35605,
+            35608,
+            35609,
+            35613,
+            35616,
+            35617
+          ]
+        },
+        "vram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "cram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "vsram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        }
+      },
+      "registers_equal": true,
+      "exceptions": [],
+      "directory": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/kb-4500",
+      "image": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/kb-4500/mdx/frame-5640528c18fac5c73e3107228f333bb2faedfe6b1683665d8a870c3d684693e4.png",
+      "oracle": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/kb-4500/oracle.png",
+      "image_sha256": "5640528c18fac5c73e3107228f333bb2faedfe6b1683665d8a870c3d684693e4",
+      "oracle_sha256": "b8fb8f013be04a5663fc7e907d5b2367c4c1822560deab222bb83a08a7eca191",
+      "oracle_state_sha256": "b4030f4740497a9133d333a37cf63f585764d12ea0a3694ff9c6c74c23fb8774",
+      "reached_frame": 4500,
+      "instructions": 50630326
+    },
+    {
+      "game": "hokuto",
+      "frame": 4000,
+      "input": "hokuto_extended_replay.json",
+      "rom_sha256": "3318f7dde3fa54c69b3144a00abe7501c42277609dc0743566f246428180f4a1",
+      "input_sha256": "8cb2e430750eba9c5f9abb398db112f0820c4766a7e2533b3640d2c2b050b766",
+      "changed_pixels": 0,
+      "pixel_bounds": null,
+      "pixel_samples": [],
+      "memory": {
+        "wram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "vram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "cram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "vsram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        }
+      },
+      "registers_equal": true,
+      "exceptions": [],
+      "directory": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/hokuto-4000",
+      "image": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/hokuto-4000/mdx/frame-45f6f1f9e47e0f6b71e469894c03b66f1a5d83b56c65669626e448227586ae20.png",
+      "oracle": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/hokuto-4000/oracle.png",
+      "image_sha256": "45f6f1f9e47e0f6b71e469894c03b66f1a5d83b56c65669626e448227586ae20",
+      "oracle_sha256": "cbf8364bfde33c580f968cb5614473d16194aa0b2d6c44fa0c0c5838e1a77034",
+      "oracle_state_sha256": "221c9f740c177a0cc7cf79e1068ccfc0019235df34ceaf6d51b704971f002541",
+      "reached_frame": 4000,
+      "instructions": 45491934
+    },
+    {
+      "game": "hokuto",
+      "frame": 6000,
+      "input": "hokuto_extended_replay.json",
+      "rom_sha256": "3318f7dde3fa54c69b3144a00abe7501c42277609dc0743566f246428180f4a1",
+      "input_sha256": "8cb2e430750eba9c5f9abb398db112f0820c4766a7e2533b3640d2c2b050b766",
+      "changed_pixels": 0,
+      "pixel_bounds": null,
+      "pixel_samples": [],
+      "memory": {
+        "wram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "vram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "cram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "vsram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        }
+      },
+      "registers_equal": true,
+      "exceptions": [],
+      "directory": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/hokuto-6000",
+      "image": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/hokuto-6000/mdx/frame-937bee11c16caf9fb7ac604e815ba2e7de10f8b30c92cad52a40bf0b466506a6.png",
+      "oracle": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/hokuto-6000/oracle.png",
+      "image_sha256": "937bee11c16caf9fb7ac604e815ba2e7de10f8b30c92cad52a40bf0b466506a6",
+      "oracle_sha256": "5aefe43c860c63265b33306cc5f6a0640a8fd128fd950f812428d8f0549bc8cd",
+      "oracle_state_sha256": "bfb9ad2b5fb0abd3a405444fa4f05b70944f5d315399762f6c6c62b3d2112690",
+      "reached_frame": 6000,
+      "instructions": 68213212
+    },
+    {
+      "game": "cadash",
+      "frame": 7000,
+      "input": "cadash_exit_replay.json",
+      "rom_sha256": "85e0782411cf50ea92a9982dac1942679f738d46a58fdda5d7d82b943512afd8",
+      "input_sha256": "c8b39cc84f51ea5e3a6bb546ae34c23bfb26b1b25e8db6d6ee0c931c5a46a7d9",
+      "changed_pixels": 0,
+      "pixel_bounds": null,
+      "pixel_samples": [],
+      "memory": {
+        "wram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "vram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "cram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "vsram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        }
+      },
+      "registers_equal": true,
+      "exceptions": [],
+      "directory": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/cadash-7000",
+      "image": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/cadash-7000/mdx/frame-6f2c70a414b69b3f670d1d87258161300028ca8b7e2542acc0b2eeee09f33e61.png",
+      "oracle": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/cadash-7000/oracle.png",
+      "image_sha256": "6f2c70a414b69b3f670d1d87258161300028ca8b7e2542acc0b2eeee09f33e61",
+      "oracle_sha256": "1563f3c8ac68e80b81e717750c130751ea3ef0f72835449b738444b15d15c4f7",
+      "oracle_state_sha256": "5edf2305a9d5517757d7e11cd5f65467aa65cc703df16b45744e56ed50e45689",
+      "reached_frame": 7000,
+      "instructions": 68263029
+    },
+    {
+      "game": "ewj",
+      "frame": 7000,
+      "input": "ewj_extended_replay.json",
+      "rom_sha256": "0fc7b0da6c42fe3b7e942607dae48f6344973127e6e51f2c6ca040d6c7e24044",
+      "input_sha256": "20fa92186f59fa16312234282df97f961b29b8d89cea95c59af214bf3ed05591",
+      "changed_pixels": 0,
+      "pixel_bounds": null,
+      "pixel_samples": [],
+      "memory": {
+        "wram": {
+          "changed_bytes": 148,
+          "first_offsets": [
+            46276,
+            46277,
+            46278,
+            46279,
+            46280,
+            46281,
+            46282,
+            46283,
+            46284,
+            46285,
+            46286,
+            46287,
+            46288,
+            46289,
+            46290,
+            46291
+          ]
+        },
+        "vram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "cram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "vsram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        }
+      },
+      "registers_equal": true,
+      "exceptions": [],
+      "directory": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/ewj-7000",
+      "image": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/ewj-7000/mdx/frame-0b4cd2fa0361348d1089ff445c4b745f081043d0b66c2c8d776d1bc17286d728.png",
+      "oracle": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/ewj-7000/oracle.png",
+      "image_sha256": "0b4cd2fa0361348d1089ff445c4b745f081043d0b66c2c8d776d1bc17286d728",
+      "oracle_sha256": "a0100324c33e2b5df5dc8f4de574a5951003681ec9a97de16d5b665de4b9f3c9",
+      "oracle_state_sha256": "c2ba77d3e4e943de7b92dff34c45915fdf992703f70f61e016c2679ab88c082a",
+      "reached_frame": 7000,
+      "instructions": 72147304
+    },
+    {
+      "game": "ewj",
+      "frame": 8000,
+      "input": "ewj_extended_replay.json",
+      "rom_sha256": "0fc7b0da6c42fe3b7e942607dae48f6344973127e6e51f2c6ca040d6c7e24044",
+      "input_sha256": "20fa92186f59fa16312234282df97f961b29b8d89cea95c59af214bf3ed05591",
+      "changed_pixels": 0,
+      "pixel_bounds": null,
+      "pixel_samples": [],
+      "memory": {
+        "wram": {
+          "changed_bytes": 148,
+          "first_offsets": [
+            46276,
+            46277,
+            46278,
+            46279,
+            46280,
+            46281,
+            46282,
+            46283,
+            46284,
+            46285,
+            46286,
+            46287,
+            46288,
+            46289,
+            46290,
+            46291
+          ]
+        },
+        "vram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "cram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "vsram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        }
+      },
+      "registers_equal": true,
+      "exceptions": [],
+      "directory": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/ewj-8000",
+      "image": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/ewj-8000/mdx/frame-93e5d795a9a2b291c196aeba2bfa61f050294aa92a001eb5e18d16ab18d0e58e.png",
+      "oracle": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/ewj-8000/oracle.png",
+      "image_sha256": "93e5d795a9a2b291c196aeba2bfa61f050294aa92a001eb5e18d16ab18d0e58e",
+      "oracle_sha256": "b3b467328d609cdbc574a45cdf9be11d37c834b206d771abba3235acbf0b0e8f",
+      "oracle_state_sha256": "0775eb1b90f47b1cbc1f00a6dc64637ab8fabaa92313a9e9d49ba234b0cff87e",
+      "reached_frame": 8000,
+      "instructions": 82119604
+    },
+    {
+      "game": "kb",
+      "frame": 6000,
+      "input": "kb_walk_replay.json",
+      "rom_sha256": "5fd1494a6a47e33d85b22ebbc26a1156f31bb539cf54d4e109e1bcbddef8b4eb",
+      "input_sha256": "1aeb82b91d912bd70e04c21c025beab1ea978111d38b6d5181f3e683e1a6b6df",
+      "changed_pixels": 0,
+      "pixel_bounds": null,
+      "pixel_samples": [],
+      "memory": {
+        "wram": {
+          "changed_bytes": 1518,
+          "first_offsets": [
+            35531,
+            35584,
+            35585,
+            35588,
+            35589,
+            35592,
+            35593,
+            35596,
+            35597,
+            35604,
+            35605,
+            35608,
+            35609,
+            35613,
+            35616,
+            35617
+          ]
+        },
+        "vram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "cram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        },
+        "vsram": {
+          "changed_bytes": 0,
+          "first_offsets": []
+        }
+      },
+      "registers_equal": true,
+      "exceptions": [],
+      "directory": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/kb-6000",
+      "image": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/kb-6000/mdx/frame-b85b97abe50754e8e45f83fddb2a8b4b5e7d98032e61cb1edc98eb2d8117f867.png",
+      "oracle": "/home/maisy/opencode_projects/reverse_kings/.mdx/fidelity-review/release-verified/kb-6000/oracle.png",
+      "image_sha256": "b85b97abe50754e8e45f83fddb2a8b4b5e7d98032e61cb1edc98eb2d8117f867",
+      "oracle_sha256": "693e2d69d117f449247c20ef33170bf9baefeb8ec38592dae971d1649670cc49",
+      "oracle_state_sha256": "011423ac1477b0f035b3e085e0d2a889faa87c260ecf5384390628b97f78d8e9",
+      "reached_frame": 6000,
+      "instructions": 67759126
+    }
+  ],
+  "frozen_manifest": "testdata/oracle_fidelity/manifest.json",
+  "frozen_manifest_sha256": "06e0644b14a72b1e9fe3e9b8b65eeaa5bca1b25d474c9870257c102b295f94e1",
+  "review": "docs/external-agent-review.md",
+  "sound_review": "docs/sound-bus-review.md",
+  "limitations": [
+    "finite same-frame video gates; not whole-game, audio or CPU-cycle equivalence",
+    "nonvideo WRAM differences remain in selected snapshots and are not classified as unused",
+    "FIFO data effects and port timestamps remain instruction-granular; long-instruction refresh suppression remains incomplete",
+    "the oracle save-state digest may vary across processes in noncanonical fields; normalized buffer and image comparisons are explicit"
+  ]
+}

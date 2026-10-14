@@ -1,0 +1,76 @@
+{
+  "date": "2026-10-13",
+  "release_binary_sha256": "0ab3ac94f486f19ca305ac450a3088b48f7a412bc291d5465ec7d0fa229f5227",
+  "default_rust_tests": {
+    "passed": 181,
+    "failed": 0,
+    "ignored": 26
+  },
+  "python_observer_tests": {
+    "passed": 4,
+    "failed": 0
+  },
+  "active_engine_change": "external DMA resume overlap and VBLANK update-window batching",
+  "dma_samples": {
+    "equal": 1472,
+    "total": 1536,
+    "verified_profiles": 46,
+    "known_gap_profiles": 2
+  },
+  "isolated_shift_candidate": {
+    "equal_samples": 3840,
+    "total_samples": 3840,
+    "ewj6000_different_pixels": 1263,
+    "active": false
+  },
+  "isolated_eclock_candidate": {
+    "baseline_equal_samples": 39,
+    "equal_samples": 633,
+    "total_samples": 640,
+    "kb6000_different_pixels": 672,
+    "active": false
+  },
+  "engine_image_gates": {
+    "original_gates_passed": 12,
+    "survey_checkpoints_passed": 17,
+    "distinct_checkpoints": 27,
+    "phase": "active DMA-only engine before transport-only project-context addition"
+  },
+  "project_context": {
+    "arguments": [
+      "project_root",
+      "artifact_store"
+    ],
+    "default_store": "<project_root>/.mdx/artifacts",
+    "concurrent_two_project_mcp": true,
+    "same_project_atomic_dedup": true,
+    "survey_inheritance_and_override": true,
+    "cli_mcp_parity": true,
+    "project_local_real_rom_gate": {
+      "frame": 4500,
+      "different_pixels": 0,
+      "snapshot_id_retrieval": true
+    }
+  },
+  "final_mcp_smoke": {
+    "tools": 18,
+    "cartridges": 4,
+    "walking": true,
+    "report": ".mdx/resume-timing/session-mcp.json"
+  },
+  "maisyapp_project": "mdx",
+  "opencode": {
+    "workspace_overrides_updated": true,
+    "global_update": "updated by user; current binary path verified",
+    "global_updater": "tools/install-opencode-mcp.py",
+    "dry_run_verified": true,
+    "backup_preservation_idempotence_verified": true
+  },
+  "limitations": [
+    "Finite video checkpoints do not establish full machine/game/audio equivalence.",
+    "Shift/E-clock candidates remain isolated after unchanged frozen-image regressions.",
+    "Known active-VRAM DMA and first-IRQ boundary gaps remain in explicit ignored regressions.",
+    "Commercial ROMs and local captures remain ignored; no commits made."
+  ],
+  "codex_registration": "updated by user; current binary path verified"
+}

@@ -132,25 +132,68 @@ pub struct HeaderArgs {
     pub rom: String,
 }
 
+#[derive(Debug, Default, Clone, Copy, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum DisasmCpu {
+    #[default]
+    M68000,
+    Z80,
+}
+
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DisasmArgs {
     pub rom: String,
-    /// Even 24-bit CPU bus address, expressed as an integer.
+    /// m68000: even CPU bus address in cartridge window 0x000000..0x3FFFFF,
+    /// normally equal to ROM offset. z80: ROM file offset, or a Z80 RAM
+    /// address 0x0000..0x1FFF with from_state.
     #[schemars(range(max = 16777215))]
     pub from: u32,
+    /// "m68000" (default) or "z80".
+    #[serde(default)]
+    pub cpu: DisasmCpu,
+    /// z80 from the ROM: the Z80 address the byte at `from` occupies once
+    /// uploaded (default 0, the usual sound-driver load address).
+    #[serde(default)]
+    pub origin: u16,
+    /// z80 only: disassemble this machine state's Z80 RAM instead of the ROM.
+    #[serde(default)]
+    #[schemars(with = "String")]
+    pub from_state: Option<String>,
     #[serde(default = "count")]
     #[schemars(range(max = 4096))]
     pub count: usize,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum BootProfile {
+    #[default]
+    Full,
+    Summary,
+}
+
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BootArgs {
+    /// Resumable machine state artifact ID or JSON path. ROM must match exactly.
+    #[serde(default)]
+    #[schemars(with = "String")]
+    pub from_state: Option<String>,
+    /// Publish a complete modeled machine state for later continuation.
+    #[serde(default)]
+    pub save_state: bool,
     pub rom: String,
+    /// Hard system-step budget, including interrupt/idle steps; default200000.
+    /// This cap can stop a run BEFORE its frame target. Increase it when asking
+    /// for later frames (e.g. frames120 with instructions5000000).
     #[serde(default = "steps")]
     #[schemars(range(max = 100000000))]
     pub instructions: u64,
+    /// Completed video frames to run from reset or the loaded state, as a JSON integer.
+    /// Not a duration or a count of serviced VINT interrupts. The run stops at
+    /// this target OR another limit first; inspect reached_frames,
+    /// frame_target_reached and termination. Instructions remains a hard cap.
     #[schemars(range(max = 100000))]
     pub frames: Option<u64>,
     #[serde(default = "trace")]
@@ -163,7 +206,32 @@ pub struct BootArgs {
     #[serde(default)]
     #[schemars(length(max = 64))]
     pub stop_at: Vec<u32>,
+    /// Controller replay JSON path; schema discovery includes file_schemas.controller_replay.
     pub input: Option<PathBuf>,
+    /// Diagnostic RAM writes at frame boundaries (merged with the replay's pokes).
+    #[serde(default)]
+    #[schemars(length(max = 1000))]
+    pub pokes: Vec<commands::input::Poke>,
+    /// Log 68000 writes into Z80 RAM, the bank register, BUSREQ and RESET to a
+    /// JSONL artifact with a per-address summary; `{}` uses the defaults.
+    #[serde(default)]
+    pub sound_commands: Option<commands::sound_log::SoundCommandOptions>,
+    /// Backup RAM image to load before running (<= 64 KiB from offset 0, e.g.
+    /// a GPGX .srm). The cartridge must have backup RAM.
+    #[serde(default)]
+    #[schemars(with = "String")]
+    pub sram: Option<PathBuf>,
+    /// "full" (default) or "summary": frame/stop status, state and snapshot
+    /// IDs, memory artifacts, screenshot and exceptions only, without traces,
+    /// hot spots, registers, VDP/sound diagnostics or observation tables.
+    #[serde(default)]
+    pub profile: BootProfile,
+    /// Console region at power-on: auto (header, like the reference), usa,
+    /// japan or europe (PAL timing).
+    #[serde(default)]
+    pub region: commands::state::RegionChoice,
+    /// Output DIRECTORY for this run's files (screenshot, memory dumps); not a
+    /// report file. The JSON envelope is the operation's return value.
     pub out: Option<PathBuf>,
     /// Optional wall-clock bound; reached targets remain distinct from timeout.
     #[schemars(range(max = 3600000))]
@@ -173,28 +241,54 @@ pub struct BootArgs {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RamArgs {
+    /// Resumable machine state artifact ID or JSON path. ROM must match exactly.
+    #[serde(default)]
+    #[schemars(with = "String")]
+    pub from_state: Option<String>,
+    /// Publish a complete modeled machine state for later continuation.
+    #[serde(default)]
+    pub save_state: bool,
+    /// Console region at power-on: auto (header, like the reference), usa,
+    /// japan or europe (PAL timing).
+    #[serde(default)]
+    pub region: commands::state::RegionChoice,
     pub rom: String,
     #[serde(default = "steps")]
     #[schemars(range(max = 100000000))]
     pub instructions: u64,
     pub stop_at: Option<u32>,
     pub find: Option<u32>,
-    /// [CPU address, byte count], bounded to one WRAM aperture.
-    pub range: Option<(u32, u32)>,
+    /// [folded WRAM offset or CPU WRAM alias, byte count]; integer or decimal/0x-prefixed text.
+    /// At most 64 KiB, wrapping within WRAM. Non-WRAM full addresses are rejected.
+    pub range: Option<(commands::ram::RangeValue, commands::ram::RangeValue)>,
     #[schemars(range(max = 3600000))]
     pub timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct GraphicsArgs {
+    pub snapshot: String,
+    /// Output DIRECTORY for exported images; not a file name.
+    pub out: Option<PathBuf>,
+    /// Compose caller-selected hardware sprites into one transparent PNG each.
+    #[serde(default)]
+    #[schemars(length(max = 16))]
+    pub sprite_groups: Vec<commands::graphics::SpriteGroup>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SnapshotArgs {
     pub snapshot: String,
+    /// Output DIRECTORY for exported images; not a file name.
     pub out: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ConformanceArgs {
+    /// SingleStepTests 68000 directory containing v1/*.json.gz, or a bundled regression JSON file.
     pub suite: PathBuf,
     pub filter: Option<String>,
     #[serde(default = "failures")]
@@ -229,6 +323,8 @@ pub struct Descriptor {
     pub description: String,
     pub input_schema: Value,
     pub output_schema: Value,
+    /// Schemas for local file inputs used by this operation.
+    pub file_schemas: std::collections::BTreeMap<String, Value>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -321,8 +417,33 @@ fn portable_schema(value: &mut Value) {
     }
 }
 
+/// Common, request-local paths exposed by every CLI/API/MCP operation.
+#[derive(Default, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceArgs {
+    /// Absolute existing directory of the calling agent's project. Relative
+    /// input/output paths resolve here, and artifacts default to .mdx/artifacts.
+    /// Pass the path as a quoted JSON string; omit it to retain the launch context.
+    #[schemars(with = "String")]
+    pub project_root: Option<PathBuf>,
+    /// Override the artifact store for this call (absolute or relative to
+    /// project_root). Use the same scope when retrieving sha256 IDs. Agents
+    /// may select separate stores, or share the concurrent-safe project store.
+    #[schemars(with = "String")]
+    pub artifact_store: Option<PathBuf>,
+}
+
 fn descriptor<I: JsonSchema, O: JsonSchema>(name: &str, description: &str) -> Descriptor {
     let mut input_schema = serde_json::to_value(schemars::schema_for!(I)).unwrap();
+    let workspace_schema = serde_json::to_value(schemars::schema_for!(WorkspaceArgs)).unwrap();
+    let properties = input_schema["properties"].as_object_mut().unwrap();
+    for (name, schema) in workspace_schema["properties"].as_object().unwrap() {
+        assert!(
+            !properties.contains_key(name),
+            "operation shadows a workspace argument"
+        );
+        properties.insert(name.clone(), schema.clone());
+    }
     let mut output_schema = serde_json::to_value(
         schemars::generate::SchemaSettings::draft2020_12()
             .for_serialize()
@@ -332,33 +453,44 @@ fn descriptor<I: JsonSchema, O: JsonSchema>(name: &str, description: &str) -> De
     .unwrap();
     portable_schema(&mut input_schema);
     portable_schema(&mut output_schema);
+    let mut file_schemas = std::collections::BTreeMap::new();
+    if matches!(name, "boot" | "trace" | "watch" | "audio") {
+        let mut replay =
+            serde_json::to_value(schemars::schema_for!(commands::input::Replay)).unwrap();
+        portable_schema(&mut replay);
+        file_schemas.insert("controller_replay".into(), replay);
+    }
     Descriptor {
         name: name.into(),
         mcp_name: name.replace('.', "_"),
         description: description.into(),
         input_schema,
         output_schema,
+        file_schemas,
     }
 }
 
 pub fn descriptors() -> Vec<Descriptor> {
     vec![
+        descriptor::<commands::template::CreateArgs, commands::template::CreateData>("template.create", "Create a standalone native Rust/Bevy game project with a Mega Drive viewport, controllers and feature-gated screenshot/input MCP. Pass an absolute destination in the calling agent's workspace; existing nonempty destinations are refused."),
         descriptor::<ImportArgs, ImportData>("artifact.import", "Import a local regular file into the immutable content-addressed store; return its reusable sha256 ID."),
         descriptor::<ReadArtifactArgs, ArtifactPage>("artifact.read", "Read a bounded byte page from a digest-verified artifact as hex or exact UTF-8; reports the next offset."),
         descriptor::<ViewArgs, ArtifactView>("artifact.view", "Inspect a JSON Pointer or page structured JSON/JSONL records from a verified artifact; useful for large boot responses and traces."),
         descriptor::<commands::memory::ReadArgs, commands::memory::ReadData>("memory.read", "Read a bounded page from verified captured memory without executing CPUs; WRAM aliases fold consistently."),
         descriptor::<commands::memory::SearchArgs, commands::memory::SearchData>("memory.search", "Search exact bytes across a complete captured buffer with explicit match pagination."),
+        descriptor::<commands::image::CompareArgs, commands::image::CompareData>("image.compare", "Compare two PNGs pixel by pixel (e.g. mdx screenshot vs native port): absolute changed counts, named regions, change bounds and a diff PNG."),
         descriptor::<commands::memory::DiffArgs, commands::memory::DiffData>("memory.diff", "Compare two captured buffers completely and page changed ranges without inferring execution or causality."),
         descriptor::<SurveyArgs, SurveyData>("survey", "Batch up to 32 explicitly selected operations with per-task results and pending IDs; nested surveys are rejected."),
-        descriptor::<commands::probe::ProbeArgs, commands::probe::ProbeData>("trace", "Trace bounded executed instructions with pre-instruction registers, optional frame/PC start and controller replay; records go to a JSONL artifact."),
-        descriptor::<commands::probe::ProbeArgs, commands::probe::ProbeData>("watch", "Observe folded WRAM writes across aliases and byte/word/long widths, including same-value writes, with exact writer PC and pre-step registers."),
+        descriptor::<commands::probe::ProbeArgs, commands::probe::ProbeData>("trace", "Trace bounded executed instructions from reset or from_state; frames, start_frame and replay frames are relative to the starting state. save_state publishes a resumable artifact; records go to JSONL."),
+        descriptor::<commands::probe::ProbeArgs, commands::probe::ProbeData>("watch", "Observe folded WRAM writes with exact writer PC and pre-step registers. Supports from_state/save_state; frames, start_frame and controller replay are relative to the starting state."),
         descriptor::<HeaderArgs, commands::header::HeaderData>("header", "Inspect a Mega Drive cartridge header, vectors and declared memory ranges."),
         descriptor::<DisasmArgs, commands::disasm::DisasmData>("disasm", "Decode bounded cartridge instructions using mdcore's decoder; does not execute the game."),
-        descriptor::<BootArgs, commands::boot::BootData>("boot", "Run a fresh bounded machine with optional controller replay; capture verified memory buffers and an image."),
-        descriptor::<RamArgs, commands::ram::RamData>("ram.dump", "Run a bounded fresh machine, then inspect folded 64 KiB work RAM."),
+        descriptor::<commands::audio::AudioArgs, commands::audio::AudioData>("audio", "Synthesize bounded stereo FM/PSG WAV audio. frames is capture duration after start_frame warmup; both are relative to reset/from_state. Supports replay/save_state, project-local artifacts and optional output directory. Inspect frame_target_reached, termination and sample indexes."),
+        descriptor::<BootArgs, commands::boot::BootData>("boot", "Run from reset or from_state to a completed-video-frame target OR its system-step budget. Frames and controller replay are relative to the starting state; reached_frames stays absolute. The default200000-step cap can stop early. save_state publishes a resumable state_artifact; snapshot_artifact captures buffers/image."),
+        descriptor::<RamArgs, commands::ram::RamData>("ram.dump", "Run from reset or from_state for a bounded number of new steps, then inspect folded 64 KiB work RAM. instructions0 reads the loaded state without advancing; save_state publishes a resumable artifact."),
         descriptor::<ConformanceArgs, commands::cpu::ConformanceData>("cpu.conformance", "Run canonical SingleStepTests fixtures with explicit coverage and timing limitations."),
         descriptor::<SnapshotArgs, commands::render::RenderData>("render", "Render digest-verified VDP snapshot buffers without executing CPUs."),
-        descriptor::<SnapshotArgs, commands::graphics::GraphicsData>("graphics", "Export all mode-5 patterns, palettes, name tables and sprites from verified snapshot buffers."),
+        descriptor::<GraphicsArgs, commands::graphics::GraphicsData>("graphics", "Export all mode-5 patterns, palettes, name tables and sprites from verified snapshot buffers; sprite_groups composes caller-selected sprites into transparent images."),
         descriptor::<SchemaArgs, SchemaData>("schema", "Describe operation input/output JSON Schemas without loading a cartridge or producing analysis artifacts."),
     ]
 }
@@ -376,7 +508,78 @@ fn erase<T: Serialize>(envelope: Envelope<T>) -> Envelope<Value> {
         .expect("valid envelope")
 }
 
-pub fn execute(name: &str, arguments: Value, context: &Context) -> Envelope<Value> {
+fn workspace_context(
+    name: &str,
+    arguments: &mut Value,
+    parent: &Context,
+) -> Result<Context, Failure> {
+    let object = arguments.as_object_mut().ok_or_else(|| {
+        crate::artifacts::failure("invalid_arguments", "operation arguments must be an object")
+    })?;
+    let mut workspace = serde_json::Map::new();
+    for key in ["project_root", "artifact_store"] {
+        if let Some(value) = object.remove(key) {
+            workspace.insert(key.into(), value);
+        }
+    }
+    let workspace: WorkspaceArgs = parse(Value::Object(workspace))?;
+    let mut context = parent.clone();
+    if let Some(root) = workspace.project_root {
+        if !root.is_absolute() || !root.is_dir() {
+            return Err(crate::artifacts::failure(
+                "invalid_arguments",
+                "project_root must be an absolute existing directory",
+            ));
+        }
+        context.store = root.join(".mdx/artifacts");
+        context.root = root;
+    }
+    if !context.root.is_absolute() {
+        context.root = crate::artifacts::absolute(&context.root)?;
+    }
+    let rooted = |path: PathBuf| {
+        if path.is_absolute() {
+            path
+        } else {
+            context.root.join(path)
+        }
+    };
+    context.store = rooted(workspace.artifact_store.unwrap_or(context.store));
+    // Resolve only path fields declared by the operation contract. Never
+    // interpret arbitrary JSON data, JSON Pointers, or survey child arguments.
+    let paths: &[&str] = match name {
+        "header" => &["rom"],
+        "disasm" => &["rom", "from_state"],
+        "ram.dump" => &["rom", "from_state"],
+        "boot" => &["rom", "input", "out", "from_state", "sram"],
+        "audio" => &["rom", "input", "out", "from_state"],
+        "trace" | "watch" => &["rom", "input", "from_state"],
+        "render" | "graphics" => &["snapshot", "out"],
+        "memory.read" | "memory.search" => &["snapshot"],
+        "memory.diff" | "image.compare" => &["left", "right", "out"],
+        "artifact.import" => &["path"],
+        "artifact.read" | "artifact.view" => &["source"],
+        "cpu.conformance" => &["suite"],
+        // Template destinations retain the explicit absolute-path contract.
+        _ => &[],
+    };
+    for key in paths {
+        if let Some(value) = object.get_mut(*key) {
+            if let Some(source) = value.as_str() {
+                let accepts_id = matches!(
+                    *key,
+                    "rom" | "snapshot" | "source" | "path" | "left" | "right" | "from_state"
+                );
+                if !accepts_id || !source.starts_with("sha256:") {
+                    *value = serde_json::to_value(rooted(PathBuf::from(source))).unwrap();
+                }
+            }
+        }
+    }
+    Ok(context)
+}
+
+pub fn execute(name: &str, mut arguments: Value, context: &Context) -> Envelope<Value> {
     if serde_json::to_vec(&arguments).unwrap().len() > 1024 * 1024 {
         return Envelope::failure(
             &format!("mdx.{name}"),
@@ -384,7 +587,11 @@ pub fn execute(name: &str, arguments: Value, context: &Context) -> Envelope<Valu
         );
     }
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        execute_inner(name, arguments, context)
+        let context = workspace_context(name, &mut arguments, context)?;
+        let mut response = execute_inner(name, arguments, &context)?;
+        response.tool = format!("mdx.{name}");
+        finalize(name, &mut response, &context)?;
+        Ok(response)
     }))
     .unwrap_or_else(|panic| {
         let message = panic
@@ -398,13 +605,7 @@ pub fn execute(name: &str, arguments: Value, context: &Context) -> Envelope<Valu
         ))
     });
     match result {
-        Ok(mut response) => {
-            response.tool = format!("mdx.{name}");
-            match finalize(name, &mut response, context) {
-                Ok(()) => response,
-                Err(failure) => Envelope::failure(&format!("mdx.{name}"), failure),
-            }
-        }
+        Ok(response) => response,
         Err(failure) => {
             let mut response = Envelope::failure(&format!("mdx.{name}"), failure);
             if matches!(
@@ -426,7 +627,9 @@ fn store_references(name: &str, data: &Value, context: &Context) -> Result<(), F
         "artifact.import" | "artifact.read" | "artifact.view" | "memory.read" | "memory.search" => {
             references.push(&data["artifact"])
         }
+        "audio" => references.push(&data["wav_artifact"]),
         "memory.diff" => references.extend([&data["left"], &data["right"]]),
+        "image.compare" => references.push(&data["diff_artifact"]),
         "trace" | "watch" => references.push(&data["records_artifact"]),
         "boot" | "render" | "graphics" => {
             if let Some(map) = data["memory_artifacts"].as_object() {
@@ -440,6 +643,9 @@ fn store_references(name: &str, data: &Value, context: &Context) -> Result<(), F
             }
             if name == "graphics" {
                 references.extend([&data["tile_indices"], &data["layout"]]);
+                if let Some(groups) = data["sprite_groups"].as_array() {
+                    references.extend(groups.iter().map(|g| &g["image"]));
+                }
                 if let Some(sheets) = data["tile_sheets"].as_array() {
                     references.extend(sheets);
                 }
@@ -487,6 +693,7 @@ fn execute_inner(
 ) -> Result<Envelope<Value>, Failure> {
     context.check()?;
     Ok(match name {
+        "template.create" => erase(commands::template::create(parse(arguments)?, context)?),
         "artifact.import" => {
             let args: ImportArgs = parse(arguments)?;
             let path = crate::artifacts::resolve(&context.store, &args.path)?;
@@ -655,6 +862,7 @@ fn execute_inner(
         "memory.read" => erase(commands::memory::read(parse(arguments)?, context)?),
         "memory.search" => erase(commands::memory::search(parse(arguments)?, context)?),
         "memory.diff" => erase(commands::memory::diff(parse(arguments)?, context)?),
+        "image.compare" => erase(commands::image::compare(parse(arguments)?, context)?),
         "trace" | "watch" => erase(commands::probe::run(parse(arguments)?, name, context)?),
         "survey" => {
             let args: SurveyArgs = parse(arguments)?;
@@ -717,20 +925,30 @@ fn execute_inner(
         }
         "disasm" => {
             let args: DisasmArgs = parse(arguments)?;
-            erase(
-                commands::disasm::run(
-                    &crate::artifacts::resolve(&context.store, &args.rom)?,
-                    args.from,
-                    args.count,
-                )?
-                .0,
-            )
+            let rom = crate::artifacts::resolve(&context.store, &args.rom)?;
+            match args.cpu {
+                DisasmCpu::M68000 if args.from_state.is_some() || args.origin != 0 => {
+                    return Err(crate::artifacts::failure(
+                        "invalid_arguments",
+                        "origin and from_state apply to cpu z80 only",
+                    ));
+                }
+                DisasmCpu::M68000 => erase(commands::disasm::run(&rom, args.from, args.count)?.0),
+                DisasmCpu::Z80 => {
+                    let source = match args.from_state.as_deref() {
+                        Some(state) => commands::disasm::Z80Source::State(state),
+                        None => commands::disasm::Z80Source::Rom { origin: args.origin },
+                    };
+                    erase(commands::disasm::run_z80(&rom, args.from, args.count, source, context)?.0)
+                }
+            }
         }
+        "audio" => erase(commands::audio::run(parse(arguments)?, context)?),
         "boot" => {
             let args: BootArgs = parse(arguments)?;
             let context = context.bounded(args.timeout_ms)?;
             erase(
-                commands::boot::run_controlled(
+                commands::boot::run_resumable(
                     &crate::artifacts::resolve(&context.store, &args.rom)?,
                     args.instructions,
                     args.trace,
@@ -740,20 +958,48 @@ fn execute_inner(
                     (!args.stop_at.is_empty()).then_some(args.stop_at),
                     args.frames,
                     args.input.as_deref(),
+                    &args.pokes,
+                    args.sound_commands.as_ref(),
+                    args.sram.as_deref(),
+                    args.region,
+                    args.from_state.as_deref(),
+                    args.save_state,
                     &context,
-                )?
+                )
+                .map(|(mut envelope, code)| {
+                    if args.profile == BootProfile::Summary {
+                        let data = &mut envelope.data;
+                        data.observations.clear();
+                        data.input_replay = None;
+                        data.first_addresses.clear();
+                        data.last_addresses.clear();
+                        data.hottest_addresses.clear();
+                        data.final_registers = None;
+                        data.vdp = None;
+                        data.unmapped_access_samples.clear();
+                    }
+                    (envelope, code)
+                })?
                 .0,
             )
         }
         "ram.dump" => {
             let args: RamArgs = parse(arguments)?;
+            let range = args
+                .range
+                .as_ref()
+                .map(|(addr, len)| Ok((addr.parse()?, len.parse()?)))
+                .transpose()?;
             erase(
-                commands::ram::run_controlled(
+                commands::ram::run_resumable(
                     &crate::artifacts::resolve(&context.store, &args.rom)?,
                     args.instructions,
                     args.stop_at,
                     args.find,
-                    args.range,
+                    range,
+                    args.from_state.as_deref(),
+                    args.save_state,
+                    args.region,
                     &context.bounded(args.timeout_ms)?,
                 )?
                 .0,
@@ -770,22 +1016,20 @@ fn execute_inner(
                 &context.bounded(args.timeout_ms)?,
             )?)
         }
-        "render" | "graphics" => {
+        "render" => {
             let args: SnapshotArgs = parse(arguments)?;
             let path = crate::artifacts::resolve(&context.store, &args.snapshot)?;
-            if name == "render" {
-                erase(commands::render::run(
-                    &path,
-                    args.out.as_deref(),
-                    &context.store,
-                )?)
-            } else {
-                erase(commands::graphics::run(
-                    &path,
-                    args.out.as_deref(),
-                    &context.store,
-                )?)
-            }
+            erase(commands::render::run(&path, args.out.as_deref(), &context.store)?)
+        }
+        "graphics" => {
+            let args: GraphicsArgs = parse(arguments)?;
+            let path = crate::artifacts::resolve(&context.store, &args.snapshot)?;
+            erase(commands::graphics::run(
+                &path,
+                args.out.as_deref(),
+                &context.store,
+                &args.sprite_groups,
+            )?)
         }
         "schema" => {
             let args: SchemaArgs = parse(arguments)?;

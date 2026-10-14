@@ -12,6 +12,10 @@
 /// implementations compose from bytes, which matches the 68000's behaviour for
 /// RAM access.
 pub trait Bus {
+    /// The CPU's instruction-stream position moved (next unread word). Buses
+    /// that model open-bus reads use it; others ignore it.
+    fn note_pc(&mut self, _pc: u32) {}
+
     fn read8(&mut self, addr: u32) -> u8;
     fn write8(&mut self, addr: u32, value: u8);
 

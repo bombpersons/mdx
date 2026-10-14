@@ -1,0 +1,215 @@
+{
+  "date": "2026-10-13",
+  "phase": "timing checkpoint before resumable-state work",
+  "release_binary_sha256": "b30027c0311ac79c082c472063b54af63e07cded58e326ab1c2a67bf1639251a",
+  "active_changes": [
+    "JSR/JMP control EA costs",
+    "MOVEM long-transfer refresh suppression",
+    "pending IRQ acknowledgement on SR writes",
+    "operand-dependent DIVU/DIVS clocks and unsigned overflow flags",
+    "FIFO wait rounding relative to scheduler frame",
+    "exact master clocks in trace records"
+  ],
+  "authored_matrices": {
+    "movem_programs": 64,
+    "pending_irq_programs": 100,
+    "division_programs": 84,
+    "fifo_programs": 42,
+    "all_reference_samples_equal": true
+  },
+  "default_rust_tests": {
+    "passed": 192,
+    "failed": 0,
+    "ignored": 23,
+    "note": "Subsequently added one ignored known-gap regression; explicit run fails at the independently observed missing Z80 wait."
+  },
+  "python_tests": {
+    "passed": 4,
+    "failed": 0
+  },
+  "frozen_images": {
+    "distinct": 27,
+    "all_passed": true,
+    "log": ".mdx/kb-timing/final-goldens.log"
+  },
+  "mcp_smoke": {
+    "tools": 18,
+    "cartridges": 4,
+    "walking": true,
+    "report": ".mdx/kb-timing/final-mcp.json"
+  },
+  "first_integrated_difference": {
+    "equal_dispatches": 8684208,
+    "skipped_dispatches": 1500000,
+    "first_difference": {
+      "ordinal": 10184208,
+      "frame": 943,
+      "mdx_master": 845769485,
+      "oracle_master": 845769555,
+      "mdx_pc": 78764,
+      "oracle_pc": 78764,
+      "mdx_registers": [
+        78764,
+        8960,
+        1,
+        64,
+        0,
+        4294967295,
+        128,
+        0,
+        2054,
+        131136,
+        0,
+        164239,
+        4294908900,
+        4294941498,
+        14681345,
+        786,
+        4294941466,
+        4294941466
+      ],
+      "oracle_registers": [
+        78764,
+        8960,
+        1,
+        64,
+        0,
+        4294967295,
+        128,
+        0,
+        2054,
+        131136,
+        0,
+        164239,
+        4294908900,
+        4294941498,
+        14681345,
+        786,
+        4294941466,
+        4294941466
+      ]
+    },
+    "preceding": [
+      {
+        "ordinal": 10184196,
+        "frame": 943,
+        "mdx_master": 845768379,
+        "oracle_master": 845768379,
+        "mdx_pc": 78764,
+        "oracle_pc": 78764
+      },
+      {
+        "ordinal": 10184197,
+        "frame": 943,
+        "mdx_master": 845768449,
+        "oracle_master": 845768449,
+        "mdx_pc": 78760,
+        "oracle_pc": 78760
+      },
+      {
+        "ordinal": 10184198,
+        "frame": 943,
+        "mdx_master": 845768561,
+        "oracle_master": 845768561,
+        "mdx_pc": 78764,
+        "oracle_pc": 78764
+      },
+      {
+        "ordinal": 10184199,
+        "frame": 943,
+        "mdx_master": 845768631,
+        "oracle_master": 845768631,
+        "mdx_pc": 78760,
+        "oracle_pc": 78760
+      },
+      {
+        "ordinal": 10184200,
+        "frame": 943,
+        "mdx_master": 845768743,
+        "oracle_master": 845768743,
+        "mdx_pc": 78764,
+        "oracle_pc": 78764
+      },
+      {
+        "ordinal": 10184201,
+        "frame": 943,
+        "mdx_master": 845768813,
+        "oracle_master": 845768813,
+        "mdx_pc": 78760,
+        "oracle_pc": 78760
+      },
+      {
+        "ordinal": 10184202,
+        "frame": 943,
+        "mdx_master": 845768939,
+        "oracle_master": 845768939,
+        "mdx_pc": 78764,
+        "oracle_pc": 78764
+      },
+      {
+        "ordinal": 10184203,
+        "frame": 943,
+        "mdx_master": 845769009,
+        "oracle_master": 845769009,
+        "mdx_pc": 78760,
+        "oracle_pc": 78760
+      },
+      {
+        "ordinal": 10184204,
+        "frame": 943,
+        "mdx_master": 845769121,
+        "oracle_master": 845769121,
+        "mdx_pc": 78764,
+        "oracle_pc": 78764
+      },
+      {
+        "ordinal": 10184205,
+        "frame": 943,
+        "mdx_master": 845769191,
+        "oracle_master": 845769191,
+        "mdx_pc": 78760,
+        "oracle_pc": 78760
+      },
+      {
+        "ordinal": 10184206,
+        "frame": 943,
+        "mdx_master": 845769303,
+        "oracle_master": 845769303,
+        "mdx_pc": 78764,
+        "oracle_pc": 78764
+      },
+      {
+        "ordinal": 10184207,
+        "frame": 943,
+        "mdx_master": 845769373,
+        "oracle_master": 845769373,
+        "mdx_pc": 78760,
+        "oracle_pc": 78760
+      }
+    ],
+    "binary_sha256": "709654e698a6b47288b5396071ec4c7fbd2f3cfbeb84213f7717c0097b68075b",
+    "oracle_core_sha256": "95b5663389c1fb92e66a784dd60c0b3db4a92b42102d905430352772589f8780",
+    "rom_sha256": "5fd1494a6a47e33d85b22ebbc26a1156f31bb539cf54d4e109e1bcbddef8b4eb",
+    "input_sha256": "1aeb82b91d912bd70e04c21c025beab1ea978111d38b6d5181f3e683e1a6b6df",
+    "limitations": [
+      "compares pre-dispatch PC/master clocks, not complete state or hardware behavior",
+      "processes stop at first difference; partial output is not a reference image"
+    ]
+  },
+  "first_four_kb_hv_reads": [
+    "9C9C",
+    "A049",
+    "CF33",
+    "CF8F"
+  ],
+  "known_gaps": [
+    "Z80 bank-window accesses omit 68k bus contention and Z80 3T-state wait",
+    "Cadash Z80 VBlank interrupt is not wired",
+    "King's Bounty RNG call6 return differs at frame3400; final live WRAM remains divergent",
+    "two large active VRAM DMA cases"
+  ],
+  "constraints": [
+    "No original oracle execution, ROM, replay or frozen reference changed",
+    "Frozen image equality and authored probes do not prove whole-machine or hardware equivalence"
+  ]
+}

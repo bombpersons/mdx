@@ -1,0 +1,250 @@
+{
+  "date": "2026-10-14",
+  "schema": "mdx.z80-contention-checkpoint.v1",
+  "fix": "Z80 decode, PSG port isolation, absolute sound scheduling and reference shared-bus/DMA phase",
+  "default_tests": {
+    "passed": 211,
+    "failed": 0,
+    "ignored": 24
+  },
+  "python_tests": {
+    "passed": 4,
+    "failed": 0
+  },
+  "golden_tests": {
+    "passed": 13,
+    "failed": 0,
+    "ignored": 0,
+    "distinct_frozen_image_checkpoints": 27,
+    "candidate_binary_sha256": "eb42afd31427f08b7e1aabf3b8e1ee6a45e5543c299753fa4529fe6bdf02d278"
+  },
+  "z80_instruction_matrix": {
+    "schema": "mdx.z80-instruction-matrix.v1",
+    "source_z80_sha256": "482cb73d3f68337980d7d58a837ffb8b02bf646f565886687c742d7cd2df83b6",
+    "source_header_sha256": "96de52c126a7bb39676f86ff4fbfc3ef1037d8e64fcd41fc574342ac1112c14c",
+    "harness_sha256": "f775a45fa6963325f97aa961d145ec6fe181ea1e276379c50234483dfc256537",
+    "profile": "little endian; unchanged core; flat64KiB bus; fixed seeded registers and memory",
+    "pc": "resume address during HALT (reference stores HALT opcode PC internally)",
+    "memory": "final written bytes by address; callback ordering is not an equivalence claim",
+    "limitations": [
+      "single authored data pattern, six flag seeds per opcode",
+      "no MEMPTR history, IRQ, bus subcycles or integrated machine equivalence claim"
+    ],
+    "total": 10752,
+    "equal": 10752,
+    "binary_sha256": "4b10fe2631ad0b0b246bef5df534c194fcb43b98cec6664550087f1070b56055",
+    "differences": []
+  },
+  "two_cpu_bus_matrices": {
+    "base": {
+      "binary_sha256": "eb42afd31427f08b7e1aabf3b8e1ee6a45e5543c299753fa4529fe6bdf02d278",
+      "oracle_core_sha256": "1ba3f40ed6aea2511b9c0d48d079283a884ac8667b916f772443f717e49db04f",
+      "oracle_opcodes_sha256": "d3ff2631658e589813d2915ba3dc03b9fd2097761f6eb221fc6264a4b8d1d6f0",
+      "equal": 224,
+      "total": 224
+    },
+    "dma_overshoot": {
+      "binary_sha256": "05d3abbf3fd108912dc47df57573ab3df860e2c12cf16189d96beda94bcc1a9c",
+      "oracle_core_sha256": "1ba3f40ed6aea2511b9c0d48d079283a884ac8667b916f772443f717e49db04f",
+      "oracle_opcodes_sha256": "d3ff2631658e589813d2915ba3dc03b9fd2097761f6eb221fc6264a4b8d1d6f0",
+      "equal": 98,
+      "total": 98
+    },
+    "block_move": {
+      "binary_sha256": "eb42afd31427f08b7e1aabf3b8e1ee6a45e5543c299753fa4529fe6bdf02d278",
+      "oracle_core_sha256": "1ba3f40ed6aea2511b9c0d48d079283a884ac8667b916f772443f717e49db04f",
+      "oracle_opcodes_sha256": "d3ff2631658e589813d2915ba3dc03b9fd2097761f6eb221fc6264a4b8d1d6f0",
+      "equal": 28,
+      "total": 28
+    },
+    "total_cases": 350,
+    "counter_samples": 11200
+  },
+  "dispatch_ranges": [
+    {
+      "equal_dispatches": 64000000,
+      "skipped_dispatches": 0,
+      "first_difference": null,
+      "binary_sha256": "c1c15de27b1a2318ffe506b757c1220578eb38fa0dc690ff87d8daf2be975b5f",
+      "oracle_core_sha256": "e8f54aea6a3879c4382f2919b54b57ed99b80a1b3336e3206e99b2a21d791f19",
+      "rom_sha256": "5fd1494a6a47e33d85b22ebbc26a1156f31bb539cf54d4e109e1bcbddef8b4eb",
+      "input_sha256": "1aeb82b91d912bd70e04c21c025beab1ea978111d38b6d5181f3e683e1a6b6df",
+      "limitations": [
+        "compares pre-dispatch PC/master clocks, not complete state or hardware behavior",
+        "processes stop at first difference; partial output is not a reference image"
+      ]
+    },
+    {
+      "equal_dispatches": 8000000,
+      "skipped_dispatches": 64000000,
+      "first_difference": null,
+      "binary_sha256": "c1c15de27b1a2318ffe506b757c1220578eb38fa0dc690ff87d8daf2be975b5f",
+      "oracle_core_sha256": "e8f54aea6a3879c4382f2919b54b57ed99b80a1b3336e3206e99b2a21d791f19",
+      "rom_sha256": "5fd1494a6a47e33d85b22ebbc26a1156f31bb539cf54d4e109e1bcbddef8b4eb",
+      "input_sha256": "1aeb82b91d912bd70e04c21c025beab1ea978111d38b6d5181f3e683e1a6b6df",
+      "limitations": [
+        "compares pre-dispatch PC/master clocks, not complete state or hardware behavior",
+        "processes stop at first difference; partial output is not a reference image"
+      ]
+    }
+  ],
+  "contiguous_dispatches_from_boot": 72000000,
+  "external_first_bus_regression": {
+    "passed": true,
+    "dispatch": 10184208,
+    "frame": 943,
+    "pc": "0x0133AC",
+    "expected_master": 845769555,
+    "expectation_unchanged": true
+  },
+  "completed_kb6000_comparison": {
+    "frame": 6000,
+    "buffers": {
+      "wram": {
+        "bytes": 65536,
+        "changed_bytes": 0,
+        "mdx_sha256": "0a039b3dfb7020a2f9097287b375b6ffe6198acc73f1ff482a96ee0fb594e37f",
+        "oracle_sha256": "0a039b3dfb7020a2f9097287b375b6ffe6198acc73f1ff482a96ee0fb594e37f"
+      },
+      "vram": {
+        "bytes": 65536,
+        "changed_bytes": 0,
+        "mdx_sha256": "c628284c34ba2933f77a8967c87a83f49dd69e285ca7270e47faa1a5beeb5433",
+        "oracle_sha256": "c628284c34ba2933f77a8967c87a83f49dd69e285ca7270e47faa1a5beeb5433"
+      },
+      "cram": {
+        "bytes": 128,
+        "changed_bytes": 0,
+        "mdx_sha256": "63b5ff6efa8bb5b44779ff20acf47e2317904b39f99b8eb01b8d4f5099db09a8",
+        "oracle_sha256": "63b5ff6efa8bb5b44779ff20acf47e2317904b39f99b8eb01b8d4f5099db09a8"
+      },
+      "vsram": {
+        "bytes": 80,
+        "changed_bytes": 0,
+        "mdx_sha256": "a21475551925f50d71aa5005bdba4d487abaf4f6bebd591cdcfdfaa94b17cd69",
+        "oracle_sha256": "a21475551925f50d71aa5005bdba4d487abaf4f6bebd591cdcfdfaa94b17cd69"
+      }
+    },
+    "rom_sha256": "5fd1494a6a47e33d85b22ebbc26a1156f31bb539cf54d4e109e1bcbddef8b4eb",
+    "registers_equal": true,
+    "changed_pixels": 0,
+    "dimensions_equal": true,
+    "z80_ram": {
+      "changed_bytes": 0,
+      "mdx_sha256": "d2cd67fb130f780042d5e2bb4c4f403d32c259e3d2fafc4f06c348007ab5e443",
+      "oracle_sha256": "d2cd67fb130f780042d5e2bb4c4f403d32c259e3d2fafc4f06c348007ab5e443"
+    },
+    "oracle_core_sha256": "1ba3f40ed6aea2511b9c0d48d079283a884ac8667b916f772443f717e49db04f"
+  },
+  "cadash_state_parity": {
+    "schema": "mdx.state-smoke.v1",
+    "binary_sha256": "eb42afd31427f08b7e1aabf3b8e1ee6a45e5543c299753fa4529fe6bdf02d278",
+    "rom_sha256": "85e0782411cf50ea92a9982dac1942679f738d46a58fdda5d7d82b943512afd8",
+    "input_sha256": "d5529916a5b66cb2183a9d7f93d5f15d43b9d8aa926c32536d52beaeda92d22d",
+    "split_frame": 2700,
+    "final_frame": 4500,
+    "state_bytes": 374662,
+    "full_state_equal": true,
+    "memory_equal": true,
+    "screenshot_equal": true,
+    "zero_step_ram_state_equal": true,
+    "boot_trace_watch_state_equal": true,
+    "uninterrupted_steps": 43356903,
+    "checkpoint_steps": 26105182,
+    "resumed_steps": 17251721,
+    "extended_frame": null,
+    "extended_steps": null,
+    "checkpoint_state": "sha256:266c79299cac28a317d258b29136c59facbbcc06591442064d9e999baf333762",
+    "final_state": "sha256:d874c82efbcbfae66450d8b120bd397a3ac06e1105e78ce0d63fd8dcb88db0fe",
+    "limitations": [
+      "mdcore continuation comparison, not hardware/audio equivalence",
+      "ROM/replay/oracle execution and frozen images unchanged"
+    ]
+  },
+  "published_mcp": {
+    "binary_sha256": "d9139f21653b47e9d74ce477bcf7e5463fe159ad2631b8e31ef204998c2ded4f",
+    "tools": [
+      "template_create",
+      "artifact_import",
+      "artifact_read",
+      "artifact_view",
+      "memory_read",
+      "memory_search",
+      "memory_diff",
+      "survey",
+      "trace",
+      "watch",
+      "header",
+      "disasm",
+      "boot",
+      "ram_dump",
+      "cpu_conformance",
+      "render",
+      "graphics",
+      "schema"
+    ],
+    "optional_project_paths_plain_string": true,
+    "state_format": 3,
+    "cadash_frame": 2000,
+    "cadash_wait_counter": 0,
+    "fm_write_count": 54578,
+    "zero_step_state_equal": true,
+    "format2_rejected": true
+  },
+  "remaining_active_dma": {
+    "status": "still_failing",
+    "fixture": "crates/mdcore/tests/fixtures/dma_hv_samples.json",
+    "first_failure": {
+      "wide": false,
+      "display": true,
+      "words": 4096,
+      "target": "vram",
+      "sample": 0,
+      "actual": 2051,
+      "expected": 24176
+    },
+    "expected_unchanged": true
+  },
+  "source_anchors": {
+    "cache/oracle/Genesis-Plus-GX/core/z80/z80.c": "482cb73d3f68337980d7d58a837ffb8b02bf646f565886687c742d7cd2df83b6",
+    "cache/oracle/Genesis-Plus-GX/core/z80/z80.h": "96de52c126a7bb39676f86ff4fbfc3ef1037d8e64fcd41fc574342ac1112c14c",
+    "cache/oracle/Genesis-Plus-GX/core/memz80.c": "142e79e651c56ef74b2557e4736734ec5592498597143ee58cee4ed39bf108ef",
+    "cache/oracle/Genesis-Plus-GX/core/vdp_ctrl.c": "34aa4da65cfadf9da528dd387929c4ad5d52ec9bb3d83e379f9c2070ce33542a",
+    "cache/oracle/Genesis-Plus-GX/core/system.c": "9c0f6a042a1f5abce540d3aa69d4fcfa3fae2c66ca7d667e6f2a81a7f8af0d79",
+    "tools/oracle_z80_probe.c": "f775a45fa6963325f97aa961d145ec6fe181ea1e276379c50234483dfc256537",
+    "tools/oracle_bus_trace.inc": "c55ffc262e7f1c4a322a05dce93bcae9fba8beef748ea710c61b403204c3ebc6",
+    "tools/oracle_z80_trace.inc": "90468c2f504da2bda8b8f9b31e5ffde769215d777c2cd637992ec351d2d8e5a7",
+    "tools/probes/z80_bus_phase.py": "ab5971ec9dca28c354e3392dfe6967f5dbde71e15e963079502d899d2880ddec",
+    "crates/mdcore/src/system.rs": "d2865313e5c0f34110093c820ea14cb77b4864b1ac4603a774383bdd7cf108e1",
+    "crates/mdcore/src/z80.rs": "f9585f99c6ef0c4136e76b139900f6def41f27f81fd8a22cceccfabd8cff09ea",
+    "crates/mdcore/src/state.rs": "f79fbf6e339219986fc19c78e954d8d50c7a0b97e40260b6de91081a4795bbcb"
+  },
+  "fixture_digests": {
+    "crates/mdcore/tests/fixtures/z80_instructions.json": "15ec98db74d6a2a6301c79ce581ae8910485e02fd3f282952fd80b1d4813d330",
+    "crates/mdcore/tests/fixtures/z80_bus_hv.json": "a2ae5fac4ec00a29087cd78f916741ecd894b6dd842133e534a67048e9a4b94b",
+    "crates/mdcore/tests/fixtures/z80_dma_overshoot_hv.json": "73be568ae14709f296dd66acab6deb72762c2882ca134878d705680cef3b9be6",
+    "crates/mdcore/tests/fixtures/z80_block_move_hv.json": "01c8cea2743fbd60d6269bf7c4f4ccc68bb78b192819c78b32bf40b9d55a4744"
+  },
+  "reproduction": [
+    "cargo test --workspace",
+    "cargo build --release -p mdx",
+    "cargo build --release -p mdcore --examples",
+    "python3 tools/probes/z80_instruction_matrix.py --out NEW_OUTPUT",
+    "python3 tools/probes/z80_bus_phase.py --out NEW_OUTPUT",
+    "python3 tools/probes/z80_bus_phase.py --dma-overshoot --out NEW_OUTPUT",
+    "python3 tools/probes/z80_bus_phase.py --block-move --out NEW_OUTPUT",
+    "cargo test -p mdcore --release --test kb_sound_bus_timing -- --ignored",
+    "MDX_GOLDEN_BINARY=$PWD/target/release/mdx cargo test -p mdx --test kings_bounty_boot --test cadash_boot --test cartridge_fidelity -- --ignored",
+    "python3 tools/state_smoke.py --rom \"rom/original/Cadash (USA, Korea).md\" --input testdata/cadash_play_replay.json --out NEW_OUTPUT"
+  ],
+  "limitations": [
+    "PC/master comparison at dispatch boundaries is not complete register or machine-state equivalence",
+    "Instruction cases use one RAM/register pattern and six flag seeds; no general MEMPTR-history proof",
+    "The reference shared-bus timing formula is approximate, not hardware cycle proof",
+    "Audio synthesis is absent and intra-instruction FM access timestamps remain coarse",
+    "Large active DMA across initial viewport/frame transition remains independently failing",
+    "State parity proves deterministic modeled continuation; format1/2 checkpoints need recapture",
+    "Golden/matrix/stream candidate builds precede the final save-boundary guard; published binary separately passed default/MCP checks",
+    "Original oracle execution, ROMs, replay input and frozen expected images unchanged; no commits"
+  ]
+}

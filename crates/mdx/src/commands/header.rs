@@ -1,12 +1,55 @@
 //! `mdx header` -- decode the cartridge header and exception vector table.
 
 use crate::envelope::{Coverage, Envelope, Subject, Warning};
-use mdcore::cartridge::{vectors, Cartridge};
+use mdcore::cartridge::Cartridge;
 use mdcore::memmap::{fold_to_cart_mirrored, region, Region};
 use serde::Serialize;
 use std::path::Path;
 
 pub const TOOL: &str = "mdx.header";
+
+// The first 64 vector slots cover reset, exceptions, autovectors and traps.
+// Slots 64..255 are user-defined vectors, outside this cartridge-header view.
+fn vector_name(index: usize) -> &'static str {
+    const EXCEPTIONS: [&str; 16] = [
+        "reset_sp",
+        "reset_pc",
+        "bus_error",
+        "address_error",
+        "illegal_instruction",
+        "divide_by_zero",
+        "chk",
+        "trapv",
+        "privilege_violation",
+        "trace",
+        "line_a",
+        "line_f",
+        "reserved_12",
+        "reserved_13",
+        "reserved_14",
+        "uninitialized_interrupt",
+    ];
+    const AUTOVECTORS: [&str; 8] = [
+        "spurious_interrupt",
+        "level_1_autovector",
+        "level_2_autovector",
+        "level_3_autovector",
+        "level_4_autovector",
+        "level_5_autovector",
+        "level_6_autovector",
+        "level_7_autovector",
+    ];
+    const TRAPS: [&str; 16] = [
+        "trap_0", "trap_1", "trap_2", "trap_3", "trap_4", "trap_5", "trap_6", "trap_7", "trap_8",
+        "trap_9", "trap_10", "trap_11", "trap_12", "trap_13", "trap_14", "trap_15",
+    ];
+    match index {
+        0..=15 => EXCEPTIONS[index],
+        24..=31 => AUTOVECTORS[index - 24],
+        32..=47 => TRAPS[index - 32],
+        _ => "reserved",
+    }
+}
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -82,18 +125,19 @@ pub fn run(rom: &Path) -> Result<(Envelope<HeaderData>, i32), crate::envelope::F
     }
 
     let rom_len = cart.data.len();
-    let view: Vec<VectorView> = vectors(&cart.data, |_| None)
-        .into_iter()
-        .map(|v| {
-            let r = region(v.address);
+    let view: Vec<VectorView> = cart.data[..0x100]
+        .chunks_exact(4)
+        .enumerate()
+        .map(|(index, bytes)| {
+            let address = u32::from_be_bytes(bytes.try_into().unwrap());
+            let r = region(address);
             let cart_offset = match r {
-                Region::Cartridge => Some(format!(
-                    "0x{:06X}",
-                    fold_to_cart_mirrored(v.address, rom_len)
-                )),
+                Region::Cartridge => {
+                    Some(format!("0x{:06X}", fold_to_cart_mirrored(address, rom_len)))
+                }
                 _ => None,
             };
-            let note = match (v.index, r) {
+            let note = match (index, r) {
                 // A stack pointer in work RAM is correct, not suspicious. The
                 // 68000 leaves reset in supervisor mode with interrupts masked,
                 // so the initial stack only has to be writable RAM.
@@ -113,15 +157,15 @@ pub fn run(rom: &Path) -> Result<(Envelope<HeaderData>, i32), crate::envelope::F
                 // Only worth saying when it is actually odd. Reporting this for
                 // every cartridge would put a note on the overwhelmingly
                 // normal 0x00000200 entry point.
-                (1, Region::Cartridge) if v.address & 1 != 0 => {
+                (1, Region::Cartridge) if address & 1 != 0 => {
                     Some("reset PC is odd; the 68000 clears bit 0 before fetching".into())
                 }
                 _ => None,
             };
             VectorView {
-                index: v.index,
-                name: v.name,
-                address: v.address_hex,
+                index,
+                name: vector_name(index),
+                address: format!("0x{address:08X}"),
                 region: region_name(r),
                 cart_offset,
                 note,
@@ -164,7 +208,7 @@ pub fn run(rom: &Path) -> Result<(Envelope<HeaderData>, i32), crate::envelope::F
 
     let coverage = Coverage::complete(vec![
         format!("rom_bytes[0..{rom_len}]"),
-        "exception_vectors[0..16]".into(),
+        "exception_vectors[0..64] (system/trap slots; user-defined slots 64..255 excluded)".into(),
     ]);
 
     let mut envelope = Envelope::ok(TOOL, Some(subject), coverage, data);

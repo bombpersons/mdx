@@ -1,0 +1,16 @@
+{
+  "events": [
+    {"frame": 3000, "port": 0, "buttons": ["start"]},
+    {"frame": 3004, "port": 0, "buttons": []},
+    {"frame": 3400, "port": 0, "buttons": ["c"]},
+    {"frame": 3404, "port": 0, "buttons": []},
+    {"frame": 3700, "port": 0, "buttons": ["start"]},
+    {"frame": 3704, "port": 0, "buttons": []},
+    {"frame": 4000, "port": 0, "buttons": ["start"]},
+    {"frame": 4004, "port": 0, "buttons": []},
+    {"frame": 4300, "port": 0, "buttons": ["right"]},
+    {"frame": 4360, "port": 0, "buttons": []},
+    {"frame": 4400, "port": 0, "buttons": ["down"]},
+    {"frame": 4460, "port": 0, "buttons": []}
+  ]
+}

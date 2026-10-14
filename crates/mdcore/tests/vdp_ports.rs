@@ -23,22 +23,28 @@ fn cartridge() -> Cartridge {
 
 #[test]
 fn reset_and_completed_frames_use_the_visible_end_vblank_edge() {
-    use mdcore::vdp::{LINES_PER_FRAME, MASTER_CYCLES_PER_LINE, VBLANK_START};
+    use mdcore::vdp::MASTER_CYCLES_PER_LINE;
     let mut sys = System::new(cartridge());
-    assert_eq!(sys.vdp.line, VBLANK_START);
+    assert_eq!(
+        sys.vdp.line, 159,
+        "hardware-measured NTSC CPU release phase"
+    );
+    assert_eq!(sys.vdp.dot, 335);
     assert_eq!(sys.vdp.frame, 0);
     assert_eq!(sys.vdp.vint_requests, 0, "reset is not an interrupt edge");
+    sys.vdp.control_write(1, 4);
+    // First frame remains 192 lines despite enabling Mode5 after release.
     sys.vdp
-        .advance_master_cycles((LINES_PER_FRAME - VBLANK_START) * MASTER_CYCLES_PER_LINE);
-    assert_eq!(sys.vdp.line, 0);
-    assert_eq!(
-        sys.vdp.frame, 0,
-        "scanline wrap is not a completed visible frame"
-    );
-    sys.vdp
-        .advance_master_cycles(VBLANK_START * MASTER_CYCLES_PER_LINE);
-    assert_eq!(sys.vdp.line, VBLANK_START);
+        .advance_master_cycles(33 * MASTER_CYCLES_PER_LINE - 1282);
+    assert_eq!(sys.vdp.line, 224);
     assert_eq!(sys.vdp.frame, 1);
+    assert_eq!(
+        sys.vdp.vint_requests, 0,
+        "VINT follows, not coincides with, VBLANK"
+    );
+    sys.vdp.advance_master_cycles(769);
+    assert_eq!(sys.vdp.vint_requests, 0);
+    sys.vdp.advance_master_cycles(1);
     assert_eq!(sys.vdp.vint_requests, 1);
     sys.vdp.advance_master_cycles(19 * MASTER_CYCLES_PER_LINE);
     assert!(sys.vdp.vblank, "NTSC line 243 remains inside VBLANK");
@@ -179,9 +185,9 @@ fn cartridge_register_writes_through_the_control_port() {
 /// boundary is genuinely crossed, rather than teleporting the line counter.
 #[test]
 fn vertical_interrupt_is_raised_once_per_frame_when_enabled() {
-    use mdcore::vdp::{Vdp, DOTS_PER_LINE};
+    use mdcore::vdp::Vdp;
     let mut v = Vdp::new();
-    v.control_write(1, 0x20);
+    v.control_write(1, 0x24);
     // One frame is 262 lines of 896 dots; a 68000 instruction is about
     // 44 cycles of 7 dots, so 1200 of them is nearly three frames.
     for _ in 0..1200 {
@@ -192,7 +198,7 @@ fn vertical_interrupt_is_raised_once_per_frame_when_enabled() {
     // just *after* the blanking edge, so the request count can lead it by one
     // for the frame in progress.
     assert!(
-        v.vint_requests >= v.frame && v.vint_requests <= v.frame + 1,
+        v.vint_requests <= v.frame && v.vint_requests + 1 >= v.frame,
         "one vertical interrupt per frame while enabled: {} requests over {} frames",
         v.vint_requests,
         v.frame
@@ -215,15 +221,24 @@ fn external_dma_advances_devices_while_the_cpu_waits_and_reset_clears_queued_wai
         sys.write16(0xC00004, 0x8000 | reg << 8 | value);
     }
     sys.write32(0xC00004, 0x4000_0080);
-    assert_eq!(&sys.vdp.vram[..204], &sys.cart.data[0x100..0x1CC]);
+    // The first update delivers 63 words at once; the rest arrive at the next
+    // line start while the 68000 waits (reference per-update transfer).
+    assert_eq!(&sys.vdp.vram[..126], &sys.cart.data[0x100..0x17E]);
+    assert_eq!(sys.vdp.dma_queue.len(), 39);
     sys.cpu.pc = 0xFF8000;
     sys.cpu.prefetch = [0x4E71, 0x4E71]; // NOP
     let (cycles, exception) = sys.step_instruction();
     assert_eq!(exception, None);
-    assert_eq!(cycles, 4 + 3420u32.div_ceil(7));
+    // Reset release is 1282 clocks into this scanline. Blank H40 DMA has
+    // floor(2138*102/3420)=63 words left; the remaining39 need1307 clocks.
+    let wait: u32 = (3420 - 1282) + 39 * 3420 / 102;
+    assert_eq!(wait, 3445);
+    assert_eq!(cycles, 4 + wait.div_ceil(7));
     assert_eq!(sys.cpu.pc, 0xFF8002);
-    assert_eq!(sys.vdp.dma_bus_stall_master_cycles, 3420);
-    assert_eq!(sys.vdp.line, mdcore::vdp::VBLANK_START + 1);
+    assert_eq!(sys.vdp.dma_bus_stall_master_cycles, u64::from(wait));
+    assert_eq!(sys.vdp.line, 160);
+    assert_eq!(&sys.vdp.vram[..204], &sys.cart.data[0x100..0x1CC]);
+    assert!(sys.vdp.dma_queue.is_empty());
     sys.reset();
     assert_eq!(sys.vdp.dma_bus_stall_master_cycles, 0);
 }

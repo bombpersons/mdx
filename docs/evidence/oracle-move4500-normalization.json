@@ -1,0 +1,25 @@
+{
+  "snapshot": "/home/maisy/opencode_projects/reverse_kings/.mdx/oracle-move4500-vdp/snapshot.json",
+  "source": {
+    "path": "/home/maisy/opencode_projects/reverse_kings/.mdx/oracle-move4500-state.bin",
+    "sha256": "4f3036f46daf1b48f88930808726cf57adda870f9f1020c3d136ae7189b57dfc",
+    "profile": "GPGX 1.7.6 MD little-endian state layout"
+  },
+  "memory_artifacts": {
+    "vram": {
+      "path": "/home/maisy/opencode_projects/reverse_kings/.mdx/oracle-move4500-vdp/vram.bin",
+      "bytes": 65536,
+      "sha256": "258fa2508c62cfba76e15f7a24ea24d6fb9f2f9603ff5772e4c3ecc259f7a15d"
+    },
+    "cram": {
+      "path": "/home/maisy/opencode_projects/reverse_kings/.mdx/oracle-move4500-vdp/cram.bin",
+      "bytes": 128,
+      "sha256": "5ff1558b46ed749bc4dc94a29c9013f414d302ab9e23e88cfad309106b0f9c25"
+    },
+    "vsram": {
+      "path": "/home/maisy/opencode_projects/reverse_kings/.mdx/oracle-move4500-vdp/vsram.bin",
+      "bytes": 80,
+      "sha256": "7cff01d344dc3220579f0c53e6739c169fb33cfefedb2ae5a99f7c2faebad407"
+    }
+  }
+}

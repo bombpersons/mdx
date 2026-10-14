@@ -1,13 +1,16 @@
 # Development and repository boundary
 
-This standalone workspace was extracted from `reverse_kings` on 2026-10-12.
-It includes reusable engine/tool source, synthetic tests, CPU regression fixtures,
-generic observer utilities and API documentation. Game-specific captures,
-assets, cartridge experiments and fidelity gates remain with their game project.
+`mdx` is the canonical toolkit workspace. On 2026-10-13, development logs,
+validation scripts, optional cartridge gates, references and local ROMs from
+`reverse_kings` were consolidated here. The native game research now lives in
+`../kings_bounty/`; no native game crate exists yet.
 
-`mdx` is the toolkit source-of-truth after this split. The originating project
-currently retains its working snapshot; changes should be ported explicitly
-rather than relying on symlinks or a sibling checkout to compile this repository.
+The older modified toolkit checkout and its Git history are preserved in the
+ignored `.legacy/reverse_kings/` archive. It is historical source, not a second
+active toolkit. Local cartridges, downloaded oracles, builds and artifact stores
+are ignored. Default tests still require no commercial ROM or downloaded oracle.
+
+See [reorganisation.md](reorganisation.md) for the directory map and validation.
 
 ## Checks
 

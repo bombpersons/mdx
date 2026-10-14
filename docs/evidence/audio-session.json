@@ -1,0 +1,142 @@
+{
+  "schema": "mdx.audio-session.v1",
+  "date": "2026-10-14",
+  "binary_sha256": "09dc0997db7517d3bf0c102b6801910c08f702576d4ad2bb6e92d5f25fca8df5",
+  "machine_state_version": 4,
+  "operations": 19,
+  "backend": {
+    "crate": "ymfm-sys",
+    "version": "0.2.0",
+    "ymfm_commit": "81aec25ccbb98f4873a255f7551ac4dadac59b4a",
+    "crate_archive_sha256": "666f5320f82b65b5864b3b9e9cc4d9a9978781644f520b4e95fdec7521c51b29",
+    "native_clock_hz": 7670454,
+    "native_sample_master_clocks": 1008,
+    "blob_bytes": 809,
+    "native_rate": 53267
+  },
+  "validation": {
+    "default_rust_passed": 222,
+    "default_rust_ignored": 23,
+    "python_observer_passed": 6,
+    "frozen_images": 27,
+    "image_comparisons_including_duplicates": 29,
+    "independent_psg_scenarios": 176,
+    "independent_psg_operations": 3472,
+    "native_fm_nonzero_tone": true,
+    "native_fm_state_continuation_equal": true,
+    "stereo_panning_against_idle_chip": true,
+    "timer_CSM_host_and_pending_write_checkpoint": true,
+    "capture_limits_observer_only": true,
+    "concurrent_project_capture_isolation": true,
+    "cli_mcp_audio_schema_parity": true
+  },
+  "cadash_audio": {
+    "schema": "mdx.audio-smoke.v1",
+    "binary_sha256": "09dc0997db7517d3bf0c102b6801910c08f702576d4ad2bb6e92d5f25fca8df5",
+    "rom_sha256": "85e0782411cf50ea92a9982dac1942679f738d46a58fdda5d7d82b943512afd8",
+    "start_frame": 1900,
+    "frames": 60,
+    "split": 30,
+    "split_pcm_equal": true,
+    "split_final_state_equal": true,
+    "boot_checkpoint_pcm_equal": true,
+    "zero_step_state_equal": true,
+    "advertised_tools": 19,
+    "output": {
+      "sha256": "54bb3f778a7e7dc6474580a28944a383e1f1882ed94d583d0d30f76d1dc7432d",
+      "sample_frames": 44157,
+      "peak": 2851,
+      "rms": 956.8906832878655,
+      "strongest_bins_hz": [
+        784.99,
+        785.98,
+        786.98,
+        783.99,
+        1979.44,
+        787.98,
+        1980.44,
+        1978.44
+      ]
+    },
+    "state_id": "sha256:463f223666b01c129cadb76e8112f31421853bdd71b752bf3c9f394dc6dee68a",
+    "wav_id": "sha256:54bb3f778a7e7dc6474580a28944a383e1f1882ed94d583d0d30f76d1dc7432d",
+    "scope": "finite mdcore continuation and nonzero audio; no hardware/analog PCM equivalence",
+    "reference": {
+      "sha256": "6001e5cc2b4f2c9c13316d8ce534a5ba03342bf11d510f440c4570d2470709cc",
+      "sample_frames": 44157,
+      "peak": 4324,
+      "rms": 1441.2148504388053,
+      "strongest_bins_hz": [
+        786.98,
+        785.98,
+        784.99,
+        783.99,
+        1979.44,
+        787.98,
+        1980.44,
+        1978.44
+      ]
+    }
+  },
+  "cadash_console_state": {
+    "schema": "mdx.state-smoke.v1",
+    "binary_sha256": "09dc0997db7517d3bf0c102b6801910c08f702576d4ad2bb6e92d5f25fca8df5",
+    "rom_sha256": "85e0782411cf50ea92a9982dac1942679f738d46a58fdda5d7d82b943512afd8",
+    "input_sha256": "d5529916a5b66cb2183a9d7f93d5f15d43b9d8aa926c32536d52beaeda92d22d",
+    "split_frame": 2700,
+    "final_frame": 4500,
+    "state_bytes": 377271,
+    "full_state_equal": true,
+    "memory_equal": true,
+    "screenshot_equal": true,
+    "zero_step_ram_state_equal": true,
+    "boot_trace_watch_state_equal": true,
+    "uninterrupted_steps": 43356903,
+    "checkpoint_steps": 26105182,
+    "resumed_steps": 17251721,
+    "extended_frame": null,
+    "extended_steps": null,
+    "checkpoint_state": "sha256:c0018f054e6a8c02eb1171852ba8c20ce1c2106570576760ce3a6d29135efcc7",
+    "final_state": "sha256:ea5bffa94848c95d39f041fe71fddc24c926f245496a9231733368d9e701d7ba",
+    "limitations": [
+      "mdcore continuation comparison, not hardware/audio equivalence",
+      "ROM/replay/oracle execution and frozen images unchanged"
+    ]
+  },
+  "source_sha256": {
+    "Cargo.lock": "e01b70dfbff43a09248f8e067f92839768ad8c2feb9d49436db901faeff310f6",
+    "crates/mdcore/src/audio.rs": "bb2f39666091b68003e234b14d3c685e1b1a53c7ae72a4c8e3e7d3a2ac8f3bc6",
+    "crates/mdcore/src/psg.rs": "ff8af6a373e8c28d2ac300ba90d8d5a2d1dbe5b9f8a771760acefe1e531eb406",
+    "crates/mdcore/src/state.rs": "1e85190ccd0ad8534a03ca33773f26c9072e46af690a49e4ddbafb64bee29b2d",
+    "crates/mdcore/src/system.rs": "3c21271951b315800e156f4709a8887a0aeb3b6cc33228e97a1ef9577182d1f8",
+    "crates/mdx/src/commands/audio.rs": "a0ddd8279300d6b7207fa841a9e86c48dc897eadf68f352e42bfa47814149f53",
+    "crates/mdx/src/operations.rs": "d2c7c84871347be72f568a57886db194190da099a50625e90cc685280c523a04",
+    "crates/mdx/src/main.rs": "663a3446827a83945bd06a2797b35017a0ce2420550ca6cf7ab6a1049c1c8a62",
+    "tools/audio_smoke.py": "592290e59eee7535d63be3087b08cf2ce29239418f1e9ac61694d362cfea0141",
+    "tools/oracle_audio.py": "2365f47d987ed0e24a3505a42d4774b8acf0f0eb49fd3f322e35888e7b030718",
+    "tools/oracle_gpgx.py": "67c7ccdc739066fa94fb75347bc558f3e0c326e1fd581f0e1eefd98e9c689a48"
+  },
+  "reproduction": [
+    "cargo test --workspace --locked",
+    "python3 -m unittest discover -s tools -p test_observers.py",
+    "MDX_GOLDEN_BINARY=$PWD/target/release/mdx cargo test -p mdx --test kings_bounty_boot --test cadash_boot --test cartridge_fidelity -- --ignored",
+    "python3 tools/audio_smoke.py --rom \"rom/original/Cadash (USA, Korea).md\" --out NEW_OUTPUT",
+    "python3 tools/state_smoke.py --rom \"rom/original/Cadash (USA, Korea).md\" --input testdata/cadash_play_replay.json --out NEW_OUTPUT"
+  ],
+  "limitations": [
+    "NTSC modeled timing, integer box resampling/DC removal; no analog-board filtering or hardware/Genesis Plus GX PCM equivalence",
+    "CPU-visible FM status remains existing validated model; timed synthesis writes use modeled CPU/Z80 access phase",
+    "No oracle execution, commercial ROMs, controller replay or frozen expected images modified; no commits",
+    "Formats1..3 require recapture; existing MCP clients must reconnect to load the new binary",
+    "Broad ROM-library failure hunting remains the next queued task"
+  ],
+  "published_mcp": {
+    "binary_sha256": "09dc0997db7517d3bf0c102b6801910c08f702576d4ad2bb6e92d5f25fca8df5",
+    "tools": 19,
+    "state_format": 4,
+    "frame": 1901,
+    "sample_frames": 736,
+    "peak": 1901,
+    "optional_paths_plain_strings": true
+  }
+}

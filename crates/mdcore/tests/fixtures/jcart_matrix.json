@@ -1,0 +1,69 @@
+{
+  "oracle_core_sha256": "1ba3f40ed6aea2511b9c0d48d079283a884ac8667b916f772443f717e49db04f",
+  "oracle_opcodes_sha256": "d3ff2631658e589813d2915ba3dc03b9fd2097761f6eb221fc6264a4b8d1d6f0",
+  "cases": [
+    {
+      "replay": [],
+      "rom_sha256": "86c1281d9e62526e822fde78b60ea9caee3067a0d457f4765aae1599de66a727",
+      "expected": {
+        "reads": "3fffff3f33b3b3333fffff3f"
+      }
+    },
+    {
+      "replay": [
+        {
+          "frame": 0,
+          "port": 2,
+          "buttons": [
+            "up",
+            "a",
+            "start"
+          ]
+        },
+        {
+          "frame": 0,
+          "port": 3,
+          "buttons": [
+            "b",
+            "c",
+            "right"
+          ]
+        }
+      ],
+      "rom_sha256": "86c1281d9e62526e822fde78b60ea9caee3067a0d457f4765aae1599de66a727",
+      "expected": {
+        "reads": "07fefe073382823307fefe07"
+      }
+    },
+    {
+      "replay": [
+        {
+          "frame": 0,
+          "port": 2,
+          "buttons": [
+            "down",
+            "left",
+            "b",
+            "c"
+          ]
+        },
+        {
+          "frame": 0,
+          "port": 3,
+          "buttons": [
+            "up",
+            "a",
+            "start",
+            "left"
+          ]
+        }
+      ],
+      "rom_sha256": "86c1281d9e62526e822fde78b60ea9caee3067a0d457f4765aae1599de66a727",
+      "expected": {
+        "reads": "3ac9c93a02b1b1023ac9c93a"
+      }
+    }
+  ],
+  "equal": 3,
+  "total": 3
+}

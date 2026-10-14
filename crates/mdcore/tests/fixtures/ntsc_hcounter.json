@@ -1,0 +1,6 @@
+{
+  "format": "H32[3420],H40[3420] unsigned byte horizontal counter values",
+  "source": "independent Genesis Plus GX core/hvc.h standard NTSC timing tables",
+  "source_sha256": "f279b184be42eb26f61cb72363626390c06643675bb22f6048b1c2727fe09d6f",
+  "fixture_sha256": "450069a9953dbe7164a5f5b86773e0764f22e2e12bcdda5830779d512b41a6ea"
+}

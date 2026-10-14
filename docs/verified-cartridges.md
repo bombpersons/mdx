@@ -7,6 +7,11 @@ behavioural checks, not claims of whole-game or cycle equivalence.
 
 ## Cadash (USA, Korea)
 
+**2026-10-13 update:** the formerly phase-shifted unattended title600 now matches
+exactly, alongside all five original gates and an extended7000 replay. Shared
+reset/refresh/bit/FIFO/VINT scheduling corrections are described below. The
+older residual discussion is retained as investigation history.
+
 ROM SHA-256: `85e0782411cf50ea92a9982dac1942679f738d46a58fdda5d7d82b943512afd8`.
 
 The late-boot vertical-bars failure had an instruction-aligned cause:
@@ -29,7 +34,7 @@ dialogue, rightward movement, attack/jump inputs and extended leftward camera
 scrolling. Exact image checks are maintained in the research project's
 `cadash_boot` test target using the standalone binary.
 
-### Residual timing limits
+### Historical timing investigation
 
 The unattended title wave is still shifted in phase at frame 600; the measured
 snapshot matches a nearby oracle frame rather than the requested frame. This
@@ -49,21 +54,49 @@ Seven existing oracle gates cover EA logo, title, character selection,
 difficulty selection, overworld entry and two directional replays. They remain
 the cross-cartridge regression checks in the research workspace.
 
-## Earthworm Jim and Hokuto no Ken
+Credits1800 and extended-world6000 now match the independent oracle exactly.
+Four-entry write-FIFO backpressure and periodic CPU refresh waits close the
+credits gap; delayed VINT preserves the original difficulty-cursor gate.
 
-Fresh replay checks reached gameplay at frame 6000 (Earthworm Jim) and 2800
-(Hokuto), with zero reported CPU exceptions. Pixel fidelity is partial:
+## Earthworm Jim and Hokuto no Ken — updated 2026-10-13
+
+Fresh checks and extended replays have zero changed pixels and CPU exceptions:
 
 | Cartridge / checkpoint | Changed pixels (320×224) |
 | --- | ---: |
-| Earthworm Jim title, frame 1200 | 3422 |
-| Earthworm Jim difficulty selection, frame 2800 | 2296 |
-| Earthworm Jim first level, frame 6000 | 1582 |
-| Hokuto timed intro, frame 1200 | 5782 |
-| Hokuto first level after Start/action replay, frame 2800 | 17 |
+| Earthworm Jim title, frame 1200 | 0 |
+| Earthworm Jim difficulty selection, frame 2800 | 0 |
+| Earthworm Jim first level, frame 6000 | 0 |
+| Earthworm Jim extended replay, frames 7000 / 8000 | 0 / 0 |
+| Hokuto splash/story/intro, frames 60 / 300 / 1200 | 0 / 0 / 0 |
+| Hokuto first level after Start/action replay, frame 2800 | 0 |
+| Hokuto extended replay, frames 4000 / 6000 | 0 / 0 |
 
-These observations establish execution progress, not pixel-perfect or whole-game
-support. The residuals require their own consumed-state investigations.
+The research workspace freezes17 survey references and preserves12 original
+gates, representing27 distinct frame/input checkpoints. At all17 surveyed
+checkpoints VRAM/CRAM/VSRAM and VDP registers also match; non-video WRAM deltas
+remain in some snapshots. These are exact finite image gates, not whole-game,
+audio or cycle equivalence.
+
+### Shared timing mechanisms
+
+- Bit-operation costs distinguish immediate/dynamic, register/memory, modifier
+  and effective-address costs. The title's absolute-long static BTST costs20
+  CPU clocks, not8. The formerly ignored reference test is now enabled.
+- A hardware-derived NTSC hard reset releases the CPU at master784462 relative
+  to the initial192-line Mode4 frame origin. Frame geometry latches at the
+  completed-frame boundary; replay frame numbers/inputs stay unchanged.
+- Console refresh waits cost14 master clocks at dispatch deadlines896 clocks
+  apart. Device clocks advance during the waits.
+- A four-word write FIFO uses independent H32/H40 slot tables, two slots per
+  VRAM word and one per CRAM/VSRAM word, with live empty/full status and an
+  explicit `fifo_stall_master_cycles` diagnostic separate from external DMA.
+- VINT rises770/788 master clocks after VBLANK in H32/H40. Frame completion
+  and replay application remain on the VBLANK edge.
+
+FIFO data updates and accesses remain instruction-granular. Long-instruction
+refresh suppression and exact intra-instruction bus timestamps are not claimed.
+No original oracle execution, old reference PNG or old replay timing was changed.
 
 ## Oracle adapter integrity
 

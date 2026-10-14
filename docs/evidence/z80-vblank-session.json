@@ -1,0 +1,315 @@
+{
+  "date": "2026-10-14",
+  "fix": "Finite VDP VBlank INT delivery to Z80 with EI delay and corrected interrupt entry",
+  "default_tests": {
+    "passed": 203,
+    "failed": 0,
+    "ignored": 24
+  },
+  "python_tests": {
+    "passed": 4,
+    "failed": 0
+  },
+  "authored_oracle_matrix": {
+    "schema": "mdx.z80-vblank.v1",
+    "binary_sha256": "e9812decac68028c2158f8a74a262a018bad87d0e9d1846d7ae2641dfd91d080",
+    "oracle_core_sha256": "1ba3f40ed6aea2511b9c0d48d079283a884ac8667b916f772443f717e49db04f",
+    "oracle_system_sha256": "9c0f6a042a1f5abce540d3aa69d4fcfa3fae2c66ca7d667e6f2a81a7f8af0d79",
+    "oracle_z80_sha256": "482cb73d3f68337980d7d58a837ffb8b02bf646f565886687c742d7cd2df83b6",
+    "cases": [
+      {
+        "mode": 0,
+        "wide": false,
+        "frames": 1,
+        "expected_counter": 0,
+        "actual_counter": 0,
+        "equal": true,
+        "rom_sha256": "4c225438c2305db278abd20037e6a9f2a8b4de84f5da31a947f27459ebf85a5b"
+      },
+      {
+        "mode": 0,
+        "wide": false,
+        "frames": 2,
+        "expected_counter": 1,
+        "actual_counter": 1,
+        "equal": true,
+        "rom_sha256": "4c225438c2305db278abd20037e6a9f2a8b4de84f5da31a947f27459ebf85a5b"
+      },
+      {
+        "mode": 0,
+        "wide": false,
+        "frames": 3,
+        "expected_counter": 2,
+        "actual_counter": 2,
+        "equal": true,
+        "rom_sha256": "4c225438c2305db278abd20037e6a9f2a8b4de84f5da31a947f27459ebf85a5b"
+      },
+      {
+        "mode": 0,
+        "wide": false,
+        "frames": 6,
+        "expected_counter": 5,
+        "actual_counter": 5,
+        "equal": true,
+        "rom_sha256": "4c225438c2305db278abd20037e6a9f2a8b4de84f5da31a947f27459ebf85a5b"
+      },
+      {
+        "mode": 0,
+        "wide": true,
+        "frames": 1,
+        "expected_counter": 0,
+        "actual_counter": 0,
+        "equal": true,
+        "rom_sha256": "031bf136b840294fc18e9fc1b7f1b1de1a070a442ec7936ad3e2472a567c781d"
+      },
+      {
+        "mode": 0,
+        "wide": true,
+        "frames": 2,
+        "expected_counter": 1,
+        "actual_counter": 1,
+        "equal": true,
+        "rom_sha256": "031bf136b840294fc18e9fc1b7f1b1de1a070a442ec7936ad3e2472a567c781d"
+      },
+      {
+        "mode": 0,
+        "wide": true,
+        "frames": 3,
+        "expected_counter": 2,
+        "actual_counter": 2,
+        "equal": true,
+        "rom_sha256": "031bf136b840294fc18e9fc1b7f1b1de1a070a442ec7936ad3e2472a567c781d"
+      },
+      {
+        "mode": 0,
+        "wide": true,
+        "frames": 6,
+        "expected_counter": 5,
+        "actual_counter": 5,
+        "equal": true,
+        "rom_sha256": "031bf136b840294fc18e9fc1b7f1b1de1a070a442ec7936ad3e2472a567c781d"
+      },
+      {
+        "mode": 1,
+        "wide": false,
+        "frames": 1,
+        "expected_counter": 0,
+        "actual_counter": 0,
+        "equal": true,
+        "rom_sha256": "a9ef0d7c06ca8ba2b7e08f8ed09cb6f9850c42af1a2c24bb76ef762a8d3678fc"
+      },
+      {
+        "mode": 1,
+        "wide": false,
+        "frames": 2,
+        "expected_counter": 1,
+        "actual_counter": 1,
+        "equal": true,
+        "rom_sha256": "a9ef0d7c06ca8ba2b7e08f8ed09cb6f9850c42af1a2c24bb76ef762a8d3678fc"
+      },
+      {
+        "mode": 1,
+        "wide": false,
+        "frames": 3,
+        "expected_counter": 2,
+        "actual_counter": 2,
+        "equal": true,
+        "rom_sha256": "a9ef0d7c06ca8ba2b7e08f8ed09cb6f9850c42af1a2c24bb76ef762a8d3678fc"
+      },
+      {
+        "mode": 1,
+        "wide": false,
+        "frames": 6,
+        "expected_counter": 5,
+        "actual_counter": 5,
+        "equal": true,
+        "rom_sha256": "a9ef0d7c06ca8ba2b7e08f8ed09cb6f9850c42af1a2c24bb76ef762a8d3678fc"
+      },
+      {
+        "mode": 1,
+        "wide": true,
+        "frames": 1,
+        "expected_counter": 0,
+        "actual_counter": 0,
+        "equal": true,
+        "rom_sha256": "6da26814de0248f6bc98bf1d2cd10345c578093ad9087384646179e1683a6f27"
+      },
+      {
+        "mode": 1,
+        "wide": true,
+        "frames": 2,
+        "expected_counter": 1,
+        "actual_counter": 1,
+        "equal": true,
+        "rom_sha256": "6da26814de0248f6bc98bf1d2cd10345c578093ad9087384646179e1683a6f27"
+      },
+      {
+        "mode": 1,
+        "wide": true,
+        "frames": 3,
+        "expected_counter": 2,
+        "actual_counter": 2,
+        "equal": true,
+        "rom_sha256": "6da26814de0248f6bc98bf1d2cd10345c578093ad9087384646179e1683a6f27"
+      },
+      {
+        "mode": 1,
+        "wide": true,
+        "frames": 6,
+        "expected_counter": 5,
+        "actual_counter": 5,
+        "equal": true,
+        "rom_sha256": "6da26814de0248f6bc98bf1d2cd10345c578093ad9087384646179e1683a6f27"
+      },
+      {
+        "mode": 2,
+        "wide": false,
+        "frames": 1,
+        "expected_counter": 0,
+        "actual_counter": 0,
+        "equal": true,
+        "rom_sha256": "bf4898081d77970af059b803b70971289a84a46d522cc4a3c0afe7278aa2a5c7"
+      },
+      {
+        "mode": 2,
+        "wide": false,
+        "frames": 2,
+        "expected_counter": 1,
+        "actual_counter": 1,
+        "equal": true,
+        "rom_sha256": "bf4898081d77970af059b803b70971289a84a46d522cc4a3c0afe7278aa2a5c7"
+      },
+      {
+        "mode": 2,
+        "wide": false,
+        "frames": 3,
+        "expected_counter": 2,
+        "actual_counter": 2,
+        "equal": true,
+        "rom_sha256": "bf4898081d77970af059b803b70971289a84a46d522cc4a3c0afe7278aa2a5c7"
+      },
+      {
+        "mode": 2,
+        "wide": false,
+        "frames": 6,
+        "expected_counter": 5,
+        "actual_counter": 5,
+        "equal": true,
+        "rom_sha256": "bf4898081d77970af059b803b70971289a84a46d522cc4a3c0afe7278aa2a5c7"
+      },
+      {
+        "mode": 2,
+        "wide": true,
+        "frames": 1,
+        "expected_counter": 0,
+        "actual_counter": 0,
+        "equal": true,
+        "rom_sha256": "84894cdee5177b75bd920e636b08ece574cecaf180d3516040255f228c02c0a2"
+      },
+      {
+        "mode": 2,
+        "wide": true,
+        "frames": 2,
+        "expected_counter": 1,
+        "actual_counter": 1,
+        "equal": true,
+        "rom_sha256": "84894cdee5177b75bd920e636b08ece574cecaf180d3516040255f228c02c0a2"
+      },
+      {
+        "mode": 2,
+        "wide": true,
+        "frames": 3,
+        "expected_counter": 2,
+        "actual_counter": 2,
+        "equal": true,
+        "rom_sha256": "84894cdee5177b75bd920e636b08ece574cecaf180d3516040255f228c02c0a2"
+      },
+      {
+        "mode": 2,
+        "wide": true,
+        "frames": 6,
+        "expected_counter": 5,
+        "actual_counter": 5,
+        "equal": true,
+        "rom_sha256": "84894cdee5177b75bd920e636b08ece574cecaf180d3516040255f228c02c0a2"
+      }
+    ],
+    "equal": 24,
+    "total": 24
+  },
+  "cadash_frame2000": {
+    "rom_sha256": "85e0782411cf50ea92a9982dac1942679f738d46a58fdda5d7d82b943512afd8",
+    "input": "none",
+    "before_fm_writes": 0,
+    "after_fm_writes": 28038,
+    "before_wait_counter": 3,
+    "after_wait_counter": 0,
+    "independent_oracle_wait_counter": 0,
+    "remaining_z80_ram_differences": 152
+  },
+  "state_compatibility": {
+    "format": 2,
+    "format1_rejected": true,
+    "reason": "INT-line level, EI shadow and corrected interrupt execution; fresh captures required"
+  },
+  "state_parity": {
+    "schema": "mdx.state-smoke.v1",
+    "binary_sha256": "e9812decac68028c2158f8a74a262a018bad87d0e9d1846d7ae2641dfd91d080",
+    "rom_sha256": "85e0782411cf50ea92a9982dac1942679f738d46a58fdda5d7d82b943512afd8",
+    "input_sha256": "761db440f9d2a5d8ade8738cfb4a86e3fded7c058a5f23ebb7673c08cec4b77c",
+    "split_frame": 2700,
+    "final_frame": 4500,
+    "state_bytes": 373868,
+    "full_state_equal": true,
+    "memory_equal": true,
+    "screenshot_equal": true,
+    "zero_step_ram_state_equal": true,
+    "boot_trace_watch_state_equal": true,
+    "uninterrupted_steps": 43583227,
+    "checkpoint_steps": 26142276,
+    "resumed_steps": 17440951,
+    "extended_frame": null,
+    "extended_steps": null,
+    "checkpoint_state": "sha256:7ce1e89a39914858f4b8ad0a48811be2e924e45ffc7bfa539dfc6d0d3f73cd5b",
+    "final_state": "sha256:0ad32dacf15e78f042bd33a4cc246e932eaab5d0da402085e0e7167546b609a0"
+  },
+  "frozen_images": {
+    "distinct": 27,
+    "all_passed": true,
+    "tests": [
+      5,
+      17,
+      7
+    ],
+    "overlap": 2,
+    "binary_sha256": "e9812decac68028c2158f8a74a262a018bad87d0e9d1846d7ae2641dfd91d080",
+    "log": ".mdx/z80-vblank/goldens.log"
+  },
+  "final_mcp": {
+    "binary_sha256": "5275b18830ce7ed7bec962081c473ed718d4649a5f5df3f4d49be0cf5f27544d",
+    "frame": 2000,
+    "fm_writes": 28038,
+    "z80_wait_counter": 0,
+    "state_version": 2,
+    "zero_step_load_exact": true,
+    "format1_rejected": true,
+    "tools": 18
+  },
+  "known_remaining_bus_gap": {
+    "explicit_ignored_test": "kb_sound_bus_timing",
+    "outcome": "fails at the same expected independently measured missing70 master clocks",
+    "actual": 845769485,
+    "expected": 845769555,
+    "frame": 943,
+    "pc": "0x133ac",
+    "log": ".mdx/z80-vblank/known-bus-gap.log"
+  },
+  "queued_audio": "User requested synthesis after current interrupt/timing work; offline YM2612/PSG WAV export proposed; maisyapp mdx task1",
+  "limitations": [
+    "No audio synthesis added",
+    "Remaining Z80 RAM/scheduler/banked-bus gaps; not whole-machine or hardware equivalence",
+    "No original oracle execution, ROM, replay or frozen reference changed",
+    "Final binary adds an imported-deadline bound; final core regressions and real Cadash MCP agree with the pinned candidate"
+  ],
+  "local_evidence": ".mdx/z80-vblank/"
+}

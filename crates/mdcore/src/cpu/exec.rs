@@ -5,7 +5,7 @@
 
 use crate::cpu::bus::Bus;
 use crate::cpu::ea::{decode_mode, Ea, Size};
-use crate::cpu::m68000::{read_sized, write_sized, Exception, M68000};
+use crate::cpu::m68000::{Exception, M68000};
 use crate::cpu::status::{C, N, V, X, Z};
 
 type Step = Result<(u32, u32), Exception>;
@@ -31,6 +31,16 @@ fn ea_cycles(mode: u16, reg: u8, size: Size, destination: bool) -> u32 {
     }
 }
 
+/// Dynamic bit operation costs from the independent 68000 opcode table.
+/// Static bit numbers add four clocks at the caller.
+fn bit_cycles(mode: u16, reg: u8, bit: u32, op: u32) -> u32 {
+    if mode == 0 {
+        (if op == 2 { 8 } else { 6 }) + if op != 0 && bit & 31 >= 16 { 2 } else { 0 }
+    } else {
+        (if op == 0 { 4 } else { 8 }) + ea_cycles(mode, reg, Size::Byte, false)
+    }
+}
+
 fn control_ea_cycles(mode: u16, reg: u8) -> u32 {
     match (mode, reg) {
         (5, _) | (7, 0 | 2) => 4,
@@ -38,6 +48,55 @@ fn control_ea_cycles(mode: u16, reg: u8) -> u32 {
         (7, 1) => 8,
         _ => 0,
     }
+}
+
+/// Operand-dependent 68000 division clocks, independently specified by the
+/// GPGX/Musashi microcycle helpers. Fixed opcode and EA clocks are separate.
+fn divu_body_cycles(mut dividend: u32, divisor: u32) -> u32 {
+    let divisor = divisor << 16;
+    let mut cycles = 76;
+    for _ in 0..15 {
+        if dividend & 0x8000_0000 != 0 {
+            dividend = dividend.wrapping_shl(1).wrapping_sub(divisor);
+        } else {
+            dividend = dividend.wrapping_shl(1);
+            cycles += 4;
+            if dividend >= divisor {
+                dividend = dividend.wrapping_sub(divisor);
+                cycles -= 2;
+            }
+        }
+    }
+    cycles
+}
+
+fn divs_body_cycles(dividend: i32, divisor: i32) -> u32 {
+    let mut cycles = 12 + if dividend < 0 { 2 } else { 0 };
+    // Preserve the measured reference's wrapped INT_MIN magnitude explicitly,
+    // without invoking Rust/C signed-absolute-value overflow. This edge timing
+    // is reference compatibility evidence, not an independent hardware claim.
+    let magnitude = dividend.wrapping_abs();
+    let divisor_magnitude = divisor.abs(); // sign-extended 16-bit operand
+    if magnitude >> 16 < divisor_magnitude {
+        let mut quotient = (i64::from(magnitude) / i64::from(divisor_magnitude)) as u32;
+        cycles += 110;
+        if divisor >= 0 {
+            cycles = if dividend >= 0 {
+                cycles - 2
+            } else {
+                cycles + 2
+            };
+        }
+        for _ in 0..15 {
+            quotient >>= 1;
+            if quotient & 1 == 0 {
+                cycles += 2;
+            }
+        }
+    } else {
+        cycles += 4;
+    }
+    cycles
 }
 
 /// The register-to-register and register-to-memory arithmetic families all share
@@ -91,6 +150,7 @@ impl M68000 {
         self.prefetch[0] = self.prefetch[1];
         self.prefetch[1] = bus.read16(self.pc.wrapping_add(4));
         self.pc = self.pc.wrapping_add(2);
+        bus.note_pc(self.pc);
 
         match ir >> 12 {
             0x0 => self.op_immediate(bus, ir),
@@ -128,13 +188,40 @@ impl M68000 {
             return Err(Exception::Illegal { opcode: ir });
         }
 
+        // MOVEP: alternate-byte transfers between Dx and (d16,Ay), high byte
+        // first. Flags are unaffected; 16 clocks for word, 24 for long.
+        if ir & 0x0138 == 0x0108 {
+            let dx = ((ir >> 9) & 7) as usize;
+            let disp = self.next_word(bus) as i16 as i32;
+            let address = self.a[reg as usize].wrapping_add(disp as u32);
+            let long = ir & 0x0040 != 0;
+            let bytes = if long { 4 } else { 2 };
+            if ir & 0x0080 != 0 {
+                let value = self.d[dx];
+                for i in 0..bytes {
+                    let shift = 8 * (bytes - 1 - i);
+                    self.wr8(bus, address.wrapping_add(2 * i), (value >> shift) as u8);
+                }
+            } else {
+                let mut value = 0u32;
+                for i in 0..bytes {
+                    value = value << 8 | self.rd8(bus, address.wrapping_add(2 * i)) as u32;
+                }
+                self.d[dx] = if long { value } else { self.d[dx] & 0xFFFF_0000 | value };
+            }
+            return Ok((if long { 24 } else { 16 }, 1));
+        }
+
         // Dynamic bit operations use bit 8; mode 001 is MOVEP instead.
         // GPGX btst_32_r_d masks the number to 31, btst_8_r_* to 7.
         if ir & 0x0100 != 0 && mode != 1 {
             let bit = self.d[((ir >> 9) & 7) as usize];
             let bit_size = if mode == 0 { Size::Long } else { Size::Byte };
             let ea = self.effective_address(bus, decode_mode(mode, reg), reg, bit_size);
-            return self.bit_op(bus, &ea, bit_size, bit, ((ir >> 6) & 3) as u32);
+            let op = ((ir >> 6) & 3) as u32;
+            return self
+                .bit_op(bus, &ea, bit_size, bit, op)
+                .map(|(_, ext)| (bit_cycles(mode, reg, bit, op), ext));
         }
 
         // $017C, $037C and $0B7C are not 68000 encodings - they are the
@@ -186,7 +273,10 @@ impl M68000 {
             let bit = self.next_word(bus) as u32;
             let bit_size = if mode == 0 { Size::Long } else { Size::Byte };
             let ea = self.effective_address(bus, decode_mode(mode, reg), reg, bit_size);
-            return self.bit_op(bus, &ea, bit_size, bit, ((ir >> 6) & 3) as u32);
+            let op = ((ir >> 6) & 3) as u32;
+            return self
+                .bit_op(bus, &ea, bit_size, bit, op)
+                .map(|(_, ext)| (bit_cycles(mode, reg, bit, op) + 4, ext));
         }
 
         let ext = match size {
@@ -343,6 +433,20 @@ impl M68000 {
             return Ok(r);
         }
 
+        // TAS on a data-alterable operand. The Mega Drive bus does not complete
+        // the locked read-modify-write, so a memory operand is tested but not
+        // written back (GPGX builds without its TAS write-back callback).
+        if ir & 0xFFC0 == 0x4AC0 && mode != 1 && !(mode == 7 && reg > 1) {
+            let ea = self.effective_address(bus, decode_mode(mode, reg), reg, Size::Byte);
+            let old = self.read_ea(bus, &ea, Size::Byte);
+            self.set_logic(Size::Byte, old);
+            if mode == 0 {
+                self.write_ea(bus, &ea, Size::Byte, old | 0x80);
+                return Ok((4, 0));
+            }
+            return Ok((10 + ea_cycles(mode, reg, Size::Byte, false), 0));
+        }
+
         // Size-selecting arithmetic and logic.
         let size_field = (ir >> 6) & 3;
         if size_field != 3 {
@@ -359,10 +463,11 @@ impl M68000 {
             };
             match ir & 0xFF00 {
                 0x4000 => {
+                    // NEGX: 0 - dst - X.
                     let dst = self.read_ea(bus, &ea, size);
-                    let r = self.sub_flags(size, dst, dst);
+                    let r = self.extended(size, dst, 0, true);
                     self.write_ea(bus, &ea, size, r);
-                    return Ok((4, 0));
+                    return Ok((modify_cycles, 0));
                 }
                 0x4200 => {
                     self.write_ea(bus, &ea, size, 0);
@@ -386,13 +491,14 @@ impl M68000 {
                     let old = self.read_ea(bus, &ea, Size::Byte);
                     let r = self.bcd_sub(old, 0);
                     self.write_ea(bus, &ea, Size::Byte, r);
-                    return Ok((6, 0));
-                }
-                0x4AC0 => {
-                    let old = self.read_ea(bus, &ea, Size::Byte);
-                    self.set_logic(Size::Byte, old);
-                    self.write_ea(bus, &ea, Size::Byte, old | 0x80);
-                    return Ok((14, 0));
+                    return Ok((
+                        if mode == 0 {
+                            6
+                        } else {
+                            8 + ea_cycles(mode, reg, Size::Byte, false)
+                        },
+                        0,
+                    ));
                 }
                 0x4A00 => {
                     let v = self.read_ea(bus, &ea, size);
@@ -438,25 +544,27 @@ impl M68000 {
                     self.set_status(value);
                 }
             }
-            return Ok(Some((12, 0)));
+            // Status-register moves have different base costs in each
+            // direction. Addressing-mode clocks still apply: immediate
+            // to SR/CCR is 16, not the data-register form's 12 clocks.
+            let cycles = if form == 0x40C0 {
+                if mode == 0 {
+                    6
+                } else {
+                    8 + ea_cycles(mode, reg, Size::Word, false)
+                }
+            } else {
+                12 + ea_cycles(mode, reg, Size::Word, false)
+            };
+            return Ok(Some((cycles, 0)));
         }
         match ir {
             0x4AFC => return Err(Exception::Illegal { opcode: ir }),
             0x4E71 => return Ok(Some((4, 0))), // NOP
-            0x46FC | 0x44FC => {
-                // MOVE #imm,SR / CCR
-                if !self.sr.is_supervisor() {
-                    return Err(Exception::Privileged);
-                }
-                let imm = self.next_word(bus);
-                if ir == 0x44FC {
-                    self.sr.set_ccr(imm);
-                } else {
-                    self.set_status(imm);
-                }
-                return Ok(Some((20, 1)));
+            0x4E70 => { // RESET
+                if !self.sr.is_supervisor() { return Err(Exception::Privileged); }
+                return Ok(Some((132, 0)));
             }
-            0x4E70 => return Ok(Some((132, 0))), // RESET
             0x4E76 => {
                 // TRAPV
                 if self.sr.flag(V) {
@@ -466,6 +574,7 @@ impl M68000 {
             }
             0x4E72 => {
                 // STOP
+                if !self.sr.is_supervisor() { return Err(Exception::Privileged); }
                 let imm = self.next_word(bus);
                 self.set_status(imm);
                 self.stopped = true;
@@ -473,9 +582,14 @@ impl M68000 {
             }
             0x4E73 => {
                 // RTE
+                if !self.sr.is_supervisor() { return Err(Exception::Privileged); }
+                // RTE ends exception processing (reference CPU_INSTR_MODE /
+                // CPU_RUN_MODE).
+                self.instr_mode_no = false;
+                self.aerr_mode = false;
                 let sp = self.a[7];
-                let sr = bus.read16(sp) as u16;
-                let pc = bus.read32(sp.wrapping_add(2));
+                let sr = self.rd16(bus, sp) as u16;
+                let pc = self.rd32(bus, sp.wrapping_add(2));
                 self.a[7] = sp.wrapping_add(6);
                 self.set_status(sr);
                 self.set_pc(bus, pc as u32);
@@ -490,7 +604,7 @@ impl M68000 {
                 // advance the stack by six. Genesis Plus GX's m68k core
                 // spells both out - `m68k_op_rts_32` is `jump(pull_32())`
                 // with `pull_32` doing `SP += 4; read_32(sp)`.
-                let target = bus.read32(self.a[7]);
+                let target = self.rd32(bus, self.a[7]);
                 self.a[7] = self.a[7].wrapping_add(4);
                 self.set_pc(bus, target);
                 return Ok(Some((16, 0)));
@@ -499,8 +613,8 @@ impl M68000 {
                 // RTR
                 // A word of CCR, then a longword of PC: six bytes.
                 let sp = self.a[7];
-                let ccr = bus.read16(sp);
-                let pc = bus.read32(sp.wrapping_add(2));
+                let ccr = self.rd16(bus, sp);
+                let pc = self.rd32(bus, sp.wrapping_add(2));
                 self.a[7] = sp.wrapping_add(6);
                 self.sr.set_ccr(ccr);
                 self.set_pc(bus, pc);
@@ -542,17 +656,15 @@ impl M68000 {
         // MOVE An,USP is 4E60-4E67 and writes the USP; MOVE USP,An is 4E68-4E6F and
         // writes the address register. Getting this pair the wrong way round
         // looks like a stack-pointer bug: `move.l a6,usp` deposits the current
-        // stack pointer into a6 and leaves a6 looking freshly initialised. Only
-        // the To-USP direction is privileged; reading the USP is legal in user
-        // mode, so gating both on the mode bit would silently drop a legal
-        // read. (Verified against the reference decoder - 4E40 is `trap #n`,
-        // not a fourth case of this family.)
+        // stack pointer into a6 and leaves a6 looking freshly initialised.
+        // Both directions are privileged on the 68000: independent GPGX
+        // m68k_op_move_32_fru/tou both gate on FLAG_S.
         if ir & 0xFFF8 == 0x4E60 || ir & 0xFFF8 == 0x4E68 {
             let to_usp = ir & 0xFFF8 == 0x4E60;
+            if !self.sr.is_supervisor() {
+                return Err(Exception::Privileged);
+            }
             if to_usp {
-                if !self.sr.is_supervisor() {
-                    return Err(Exception::Privileged);
-                }
                 self.usp = self.a[reg as usize];
             } else {
                 self.a[reg as usize] = self.usp;
@@ -562,9 +674,10 @@ impl M68000 {
         if ir & 0xFFF8 == 0x4E50 {
             let an = reg as usize;
             let disp = self.next_word(bus) as i16 as i32;
-            let old = self.a[an];
             self.a[7] = self.a[7].wrapping_sub(4);
-            bus.write32(self.a[7], old);
+            // LINK A7 stores the already-decremented stack pointer (GPGX link_16_a7).
+            let old = if an == 7 { self.a[7] } else { self.a[an] };
+            self.wr32(bus, self.a[7], old);
             self.a[an] = self.a[7];
             self.a[7] = self.a[7].wrapping_add(disp as u32);
             return Ok(Some((16, 1)));
@@ -572,8 +685,10 @@ impl M68000 {
         if ir & 0xFFF8 == 0x4E58 {
             let an = reg as usize;
             self.a[7] = self.a[an];
-            self.a[an] = bus.read32(self.a[7]);
+            let saved = self.rd32(bus, self.a[7]);
             self.a[7] = self.a[7].wrapping_add(4);
+            // UNLK A7 loads A7 from the stack without the +4 (GPGX unlk_32_a7).
+            self.a[an] = saved;
             return Ok(Some((12, 0)));
         }
         if ir & 0xFFC0 == 0x4840 {
@@ -585,7 +700,7 @@ impl M68000 {
             let addr = self.lea_address(bus, mode, reg);
             let sp = self.a[7].wrapping_sub(4);
             self.a[7] = sp;
-            bus.write32(sp, addr);
+            self.wr32(bus, sp, addr);
             let cycles = match (mode, reg) {
                 (2, _) => 12,
                 (6, _) | (7, 3) => 20,
@@ -605,67 +720,55 @@ impl M68000 {
         if ir & 0xFB80 == 0x4880 && mode >= 2 {
             return Ok(Some(self.op_movem(bus, ir)?));
         }
-        // JMP with an absolute operand, and JSR abs.l, take a full 32-bit
-        // address that is *not* read from memory. 0x4EF8 is the word form and
-        // 0x4EF9 the long form; 0x4E81 is jsr abs.l.
-        if ir == 0x4EB9 || ir == 0x4EF9 || ir == 0x4EF8 {
-            let wide = ir != 0x4EF8;
-            let target = if wide {
-                (self.next_word(bus) as u32) << 16 | self.next_word(bus) as u32
-            } else {
-                self.next_word(bus) as i16 as i32 as u32
-            };
-            if ir == 0x4EB9 {
-                // The pushed address is the one past both extension words.
-                let sp = self.a[7].wrapping_sub(4);
-                bus.write32(sp, self.pc);
-                self.a[7] = sp;
-            }
-            self.set_pc(bus, target);
-            return Ok(Some((16, 0)));
-        }
         if ir & 0xFFC0 == 0x4E80 || ir & 0xFFC0 == 0x4EC0 {
-            // JSR/JMP with a memory effective address; only (An) forms exist
-            // without extension words, and the others are handled by JSR/JMP
-            // in the line-2 group.
+            // JSR/JMP accept control addressing modes only. Their EA costs
+            // differ from LEA/ordinary memory transfers (68000 opcode table).
+            let jump_cycles = match (mode, reg) {
+                (2, _) => 8,
+                (5, _) | (7, 0 | 2) => 10,
+                (6, _) | (7, 3) => 14,
+                (7, 1) => 12,
+                _ => return Err(Exception::Illegal { opcode: ir }),
+            };
             let ea = self.effective_address(bus, decode_mode(mode, reg), reg, Size::Long);
             let target = match ea {
                 Ea::Memory(a) => a,
                 _ => return Err(Exception::Illegal { opcode: ir }),
             };
-            if ir & 0x0040 == 0 {
+            let call = ir & 0x0040 == 0;
+            if call {
                 let sp = self.a[7].wrapping_sub(4);
-                bus.write32(sp, self.pc);
+                self.wr32(bus, sp, self.pc);
                 self.a[7] = sp;
             }
             self.set_pc(bus, target);
-            return Ok(Some((16, 0)));
+            return Ok(Some((jump_cycles + if call { 8 } else { 0 }, 0)));
         }
         if ir & 0xF1C0 == 0x41C0 {
-            // LEA. CHK.L shares this bit pattern and is told apart by its
-            // operand being (An); everything else is an address load.
+            // LEA. (CHK.L shares this pattern only on the 68020 and later.)
             let addr = self.lea_address(bus, mode, reg);
             let an = ((ir >> 9) & 7) as usize;
             self.a[an] = addr;
             return Ok(Some((4 + control_ea_cycles(mode, reg), 0)));
         }
-        if ir & 0xF1C0 == 0x4180 || ir & 0xF1C0 == 0x41C0 {
-            // CHK.W / CHK.L
-            let long = ir & 0x0040 != 0;
-            let size = if long { Size::Long } else { Size::Word };
-            let bound = self.d[((ir >> 9) & 7) as usize];
-            let ea = self.effective_address(bus, decode_mode(mode, reg), reg, size);
-            let value = self.read_ea(bus, &ea, size);
-            let (value, bound) = if long {
-                (value as i32, bound as i32)
-            } else {
-                (value as u16 as i16 as i32, bound as u16 as i16 as i32)
-            };
-            self.sr.set_flag(N, value < 0);
-            if value < 0 || value > bound {
-                return Err(Exception::Vector { vector: 6 });
+        if ir & 0xF1C0 == 0x4180 {
+            // CHK.W <ea>,Dn: Dn is checked against the bound at <ea>. GPGX's
+            // undocumented flags: Z from Dn, V and C clear, N set when Dn < 0.
+            let ea = self.effective_address(bus, decode_mode(mode, reg), reg, Size::Word);
+            let bound = self.read_ea(bus, &ea, Size::Word) as u16 as i16;
+            let value = self.d[((ir >> 9) & 7) as usize] as u16 as i16;
+            let ea_cost = ea_cycles(mode, reg, Size::Word, false);
+            self.sr.set_flag(Z, value == 0);
+            self.sr.set_flag(V, false);
+            self.sr.set_flag(C, false);
+            if (0..=bound).contains(&value) {
+                return Ok(Some((10 + ea_cost, 0)));
             }
-            return Ok(Some((10, 0)));
+            if value < 0 {
+                self.sr.set_flag(N, true);
+            }
+            self.trap_cycles = ea_cost + if value < 0 { 2 } else { 0 };
+            return Err(Exception::Vector { vector: 6 });
         }
         Ok(None)
     }
@@ -723,15 +826,18 @@ impl M68000 {
                 // the saved frame unwritten.
                 if decrement {
                     addr = addr.wrapping_sub(step);
-                    write_sized(bus, addr, size, value);
+                    self.write_sized(bus, addr, size, value);
                 } else {
-                    write_sized(bus, addr, size, value);
+                    self.write_sized(bus, addr, size, value);
                     addr = addr.wrapping_add(step);
                 }
                 count += 1;
             }
             if decrement {
                 self.a[reg as usize] = addr;
+            }
+            if size == Size::Long {
+                self.refresh_block_cycles = Some(count * step * 2);
             }
             return Ok((8 + count * step * 2 + control_ea_cycles(mode, reg), 1));
         }
@@ -741,7 +847,7 @@ impl M68000 {
             if list & (1u16 << r) == 0 {
                 continue;
             }
-            let raw = read_sized(bus, addr, size);
+            let raw = self.read_sized(bus, addr, size);
             // GPGX movem_16_er_* sign-extends every word load, including Dn.
             let value = if size == Size::Word {
                 raw as u16 as i16 as i32 as u32
@@ -760,6 +866,9 @@ impl M68000 {
         // Non-postincrement forms must not advance an unlisted base register.
         if mode == 3 {
             self.a[reg as usize] = addr;
+        }
+        if size == Size::Long {
+            self.refresh_block_cycles = Some(count * step * 2);
         }
         Ok((12 + count * step * 2 + control_ea_cycles(mode, reg), 1))
     }
@@ -890,7 +999,7 @@ impl M68000 {
                 ((ir & 0xFF) as i8 as i32, self.pc)
             };
             let sp = self.a[7].wrapping_sub(4);
-            bus.write32(sp, pushed);
+            self.wr32(bus, sp, pushed);
             self.a[7] = sp;
             self.set_pc(bus, base.wrapping_add(disp as u32));
             return Ok((18, if wide { 1 } else { 0 }));
@@ -949,24 +1058,9 @@ impl M68000 {
     // --------------------------------------------- 8, 9, B, C and D families
 
     fn line_8<B: Bus>(&mut self, bus: &mut B, ir: u16) -> Step {
-        let mode = (ir >> 3) & 7;
         let reg = (ir & 7) as u8;
-        if mode == 4 && ir & 0xF1F0 == 0x8100 {
-            // SBCD with memory operands, decrementing by one byte.
-            let src = ((ir >> 9) & 7) as usize;
-            let sa = self.a[src].wrapping_sub(1);
-            let da = if reg == 0 {
-                self.a[0].wrapping_sub(1)
-            } else {
-                self.a[reg as usize].wrapping_sub(1)
-            };
-            let s = read_sized(bus, sa, Size::Byte);
-            let d = read_sized(bus, da, Size::Byte);
-            let r = self.bcd_sub(s, d);
-            write_sized(bus, da, Size::Byte, r);
-            self.a[src] = sa;
-            self.a[reg as usize] = da;
-            return Ok((18, 0));
+        if ir & 0xF1F0 == 0x8100 {
+            return self.bcd_instruction(bus, ir, false);
         }
         if ir & 0xF1C0 == 0x80C0 {
             let ea = self.effective_address(bus, decode_mode((ir >> 3) & 7, reg), reg, Size::Word);
@@ -974,18 +1068,24 @@ impl M68000 {
             let target = ((ir >> 9) & 7) as usize;
             let dividend = self.d[target];
             if divisor == 0 {
+                self.sr.set_flag(C, false);
+                self.trap_cycles = ea_cycles((ir >> 3) & 7, reg, Size::Word, false);
                 return Err(Exception::DivideByZero);
             }
             let quotient = dividend / divisor;
             if quotient > 0xFFFF {
                 self.sr.set_flag(V, true);
-                return Ok((140, 0));
+                self.sr.set_flag(N, true);
+                self.sr.set_flag(C, false);
+                return Ok((10 + ea_cycles((ir >> 3) & 7, reg, Size::Word, false), 0));
             }
+            let body = divu_body_cycles(dividend, divisor);
+            self.refresh_block_cycles = Some(body);
             self.sr.set_flag(V, false);
             self.sr.set_flag(C, false);
             self.d[target] = ((dividend % divisor) << 16) | quotient;
             self.set_nz(Size::Word, quotient);
-            return Ok((140, 0));
+            return Ok((body + ea_cycles((ir >> 3) & 7, reg, Size::Word, false), 0));
         }
         if ir & 0xF1C0 == 0x81C0 {
             let ea = self.effective_address(bus, decode_mode((ir >> 3) & 7, reg), reg, Size::Word);
@@ -993,8 +1093,13 @@ impl M68000 {
             let target = ((ir >> 9) & 7) as usize;
             let dividend = self.d[target] as u32 as i32;
             if divisor == 0 {
+                self.sr.set_flag(C, false);
+                self.trap_cycles = ea_cycles((ir >> 3) & 7, reg, Size::Word, false);
                 return Err(Exception::DivideByZero);
             }
+            let body = divs_body_cycles(dividend, divisor);
+            self.refresh_block_cycles = Some(body);
+            let cycles = body + ea_cycles((ir >> 3) & 7, reg, Size::Word, false);
             // GPGX's explicit MIN/-1 case produces zero and Z rather than
             // invoking host signed overflow (m68kops.h divs_16_i/d handlers).
             if dividend == i32::MIN && divisor == -1 {
@@ -1003,7 +1108,7 @@ impl M68000 {
                 self.sr.set_flag(Z, true);
                 self.sr.set_flag(V, false);
                 self.sr.set_flag(C, false);
-                return Ok((158, 0));
+                return Ok((cycles, 0));
             }
             // Widen before division so no host overflow can panic analysis.
             let quotient = i64::from(dividend) / i64::from(divisor);
@@ -1011,20 +1116,23 @@ impl M68000 {
                 self.sr.set_flag(V, true);
                 self.sr.set_flag(N, true);
                 self.sr.set_flag(C, false);
-                return Ok((158, 0));
+                return Ok((cycles, 0));
             }
             self.sr.set_flag(V, false);
             self.sr.set_flag(C, false);
             let remainder = i64::from(dividend) % i64::from(divisor);
             self.d[target] = ((remainder as u32 & 0xffff) << 16) | (quotient as u32 & 0xFFFF);
             self.set_nz(Size::Word, quotient as u32 & 0xFFFF);
-            return Ok((158, 0));
+            return Ok((cycles, 0));
         }
         self.alu(bus, ir, Alu::Or)
     }
 
     fn line_9<B: Bus>(&mut self, bus: &mut B, ir: u16) -> Step {
-        // SUBA is the only address-register form here; `alu` handles it.
+        // SUBX mirrors ADDX's encoding; SUBA is left for `alu`.
+        if ir & 0x0130 == 0x0100 && ir & 0x00C0 != 0x00C0 {
+            return self.extended_pair(bus, ir, true);
+        }
         self.alu(bus, ir, Alu::Sub)
     }
 
@@ -1038,7 +1146,7 @@ impl M68000 {
             let src = reg as usize;
             let dst = ((ir >> 9) & 7) as usize;
             let sa = self.a[src];
-            let s = read_sized(bus, sa, size);
+            let s = self.read_sized(bus, sa, size);
             let step = |r| {
                 if size == Size::Byte && r == 7 {
                     2
@@ -1049,7 +1157,7 @@ impl M68000 {
             let sa_next = sa.wrapping_add(step(src));
             self.a[src] = sa_next;
             let da = self.a[dst];
-            let d = read_sized(bus, da, size);
+            let d = self.read_sized(bus, da, size);
             self.a[dst] = da.wrapping_add(step(dst));
             self.compare_flags(size, d, s);
             return Ok((if size == Size::Long { 20 } else { 12 }, 0));
@@ -1112,53 +1220,18 @@ impl M68000 {
             }
             return Ok((6, 0));
         }
-        if mode == 4 && ir & 0xF1F0 == 0xC100 {
-            // ABCD with memory operands, decrementing by one byte.
-            let src = ((ir >> 9) & 7) as usize;
-            let sa = self.a[src].wrapping_sub(1);
-            let da = self.a[reg as usize].wrapping_sub(1);
-            let s = read_sized(bus, sa, Size::Byte);
-            let d = read_sized(bus, da, Size::Byte);
-            let r = self.bcd_add(s, d);
-            write_sized(bus, da, Size::Byte, r);
-            self.a[src] = sa;
-            self.a[reg as usize] = da;
-            return Ok((18, 0));
+        if ir & 0xF1F0 == 0xC100 {
+            return self.bcd_instruction(bus, ir, true);
         }
         let _ = mode;
         self.alu(bus, ir, Alu::And)
     }
 
     fn line_d<B: Bus>(&mut self, bus: &mut B, ir: u16) -> Step {
-        let mode = (ir >> 3) & 7;
-        let reg = (ir & 7) as u8;
-        // ADDX and ADDA share the same bit pattern; the effective address tells
-        // them apart, so ADDX must be tested first.
-        if ir & 0x0130 == 0x0100 && (ir >> 6) & 3 == 0 && matches!(mode, 0 | 1 | 4) {
-            let src = ((ir >> 9) & 7) as usize;
-            if mode == 4 {
-                // Memory operands, decrementing by one byte.
-                let sa = self.a[src].wrapping_sub(1);
-                let da = self.a[reg as usize].wrapping_sub(1);
-                let s = read_sized(bus, sa, Size::Byte);
-                let d = read_sized(bus, da, Size::Byte);
-                let r = self.addx(Size::Byte, s, d, self.sr.flag(X));
-                write_sized(bus, da, Size::Byte, r);
-                self.sr.set_flag(Z, r == 0);
-                self.a[src] = sa;
-                self.a[reg as usize] = da;
-                return Ok((18, 0));
-            }
-            // Register operands: only Z is affected.
-            let r = self.addx(
-                Size::Byte,
-                self.d[src],
-                self.d[reg as usize],
-                self.sr.flag(X),
-            );
-            self.d[reg as usize] = r;
-            self.sr.set_flag(Z, r == 0);
-            return Ok((4, 0));
+        // ADDX occupies the `ADD Dn,<ea>` forms whose EA would be Dn or An
+        // (bits 5-4 clear); bit 3 picks registers or predecrement memory.
+        if ir & 0x0130 == 0x0100 && ir & 0x00C0 != 0x00C0 {
+            return self.extended_pair(bus, ir, false);
         }
         // ADDA is the remaining address-register form; `alu` handles it.
         self.alu(bus, ir, Alu::Add)
@@ -1330,21 +1403,57 @@ impl M68000 {
     }
 
     /// `src + dst + X` for ADDX. Only Z is meaningful to the caller.
-    fn addx(&mut self, size: Size, src: u32, dst: u32, x: bool) -> u32 {
+    fn extended(&mut self, size: Size, src: u32, dst: u32, subtract: bool) -> u32 {
         let mask = size.mask();
-        let sign = 1u32 << (size.bytes() * 8 - 1);
-        let full = src as u64 + dst as u64 + x as u64;
-        let r = (full & mask as u64) as u32;
-        self.sr.set_flag(C, full > mask as u64);
-        let (sa, sb, so) = (src & sign, dst & sign, r & sign);
-        self.sr.set_flag(V, sa == sb && so != sa);
-        self.sr.set_flag(X, self.sr.flag(C));
-        // Preserve the outer half of a register operand.
-        if size != Size::Long {
-            (dst & !mask) | r
+        let sign = 1u64 << (size.bytes() * 8 - 1);
+        let (src, dst, x) = ((src & mask) as u64, (dst & mask) as u64, self.sr.flag(X) as u64);
+        let full = if subtract {
+            dst.wrapping_sub(src).wrapping_sub(x)
         } else {
-            r
+            dst + src + x
+        };
+        let r = full & mask as u64;
+        let carry = full & !(mask as u64) != 0;
+        let overflow = if subtract {
+            (src ^ dst) & (r ^ dst) & sign != 0
+        } else {
+            (src ^ r) & (dst ^ r) & sign != 0
+        };
+        self.sr.set_flag(C, carry);
+        self.sr.set_flag(X, carry);
+        self.sr.set_flag(V, overflow);
+        self.sr.set_flag(N, r & sign != 0);
+        // Z is only ever cleared, so multi-precision chains test the whole value.
+        if r != 0 {
+            self.sr.set_flag(Z, false);
         }
+        r as u32
+    }
+
+    /// ADDX/SUBX: `Dy,Dx` or `-(Ay),-(Ax)` with the operand size in bits 7-6.
+    fn extended_pair<B: Bus>(&mut self, bus: &mut B, ir: u16, subtract: bool) -> Step {
+        let size = Size::from_bits((ir >> 6) & 3);
+        let src = (ir & 7) as usize;
+        let dst = ((ir >> 9) & 7) as usize;
+        if ir & 8 == 0 {
+            let r = self.extended(size, self.d[src], self.d[dst], subtract);
+            self.d[dst] = (self.d[dst] & !size.mask()) | r;
+            return Ok((if size == Size::Long { 8 } else { 4 }, 0));
+        }
+        let step = |r: usize| {
+            if size == Size::Byte && r == 7 {
+                2
+            } else {
+                size.bytes()
+            }
+        };
+        self.a[src] = self.a[src].wrapping_sub(step(src));
+        let s = self.read_sized(bus, self.a[src], size);
+        self.a[dst] = self.a[dst].wrapping_sub(step(dst));
+        let d = self.read_sized(bus, self.a[dst], size);
+        let r = self.extended(size, s, d, subtract);
+        self.write_sized(bus, self.a[dst], size, r);
+        Ok((if size == Size::Long { 30 } else { 18 }, 0))
     }
 
     // ------------------------------------------------------------- group E
@@ -1401,6 +1510,11 @@ impl M68000 {
             }
         };
         let old = self.d[reg];
+        // Nonzero register-count forms suppress refresh during their variable
+        // internal phase. Immediate-count forms do not apply this rule.
+        if ir & 0x0020 != 0 && count != 0 {
+            self.refresh_block_cycles = Some(count * 2);
+        }
         let r = self.shift(kind, dir_left, count, old, size);
         self.d[reg] = match size {
             Size::Byte => (old & !0xFF) | (r & 0xFF),
@@ -1478,47 +1592,67 @@ impl M68000 {
 
     // ----------------------------------------------------------------- BCD
 
+    /// ABCD/SBCD use bit3 for register vs predecrement memory operands.
+    /// Source is bits2-0, destination bits11-9. The generic EA mode does not
+    /// identify these forms; both old mode==4 guards excluded the whole family.
+    fn bcd_instruction<B: Bus>(&mut self, bus: &mut B, ir: u16, add: bool) -> Step {
+        let source = (ir & 7) as usize;
+        let destination = ((ir >> 9) & 7) as usize;
+        let memory = ir & 8 != 0;
+        let (src, dst, address) = if memory {
+            self.a[source] = self.a[source].wrapping_sub(if source == 7 { 2 } else { 1 });
+            let src = self.rd8(bus, self.a[source]) as u32;
+            self.a[destination] =
+                self.a[destination].wrapping_sub(if destination == 7 { 2 } else { 1 });
+            let address = self.a[destination];
+            (src, self.rd8(bus, address) as u32, Some(address))
+        } else {
+            (self.d[source] & 0xff, self.d[destination] & 0xff, None)
+        };
+        let result = if add {
+            self.bcd_add(src, dst)
+        } else {
+            self.bcd_sub(src, dst)
+        };
+        if let Some(address) = address {
+            self.wr8(bus, address, result as u8);
+        } else {
+            self.d[destination] = (self.d[destination] & !0xff) | result;
+        }
+        Ok((if memory { 18 } else { 6 }, 0))
+    }
+
     /// `BCD add`: `src + dst + X`, with decimal correction.
     pub(crate) fn bcd_add(&mut self, src: u32, dst: u32) -> u32 {
-        let x = self.sr.flag(X) as u32;
-        let mut low = (src & 0x0F) + (dst & 0x0F) + x;
-        let mut high = ((src >> 4) & 0x0F) + ((dst >> 4) & 0x0F);
-        if low > 9 {
-            low -= 10;
-            high += 1;
-        }
-        self.sr.set_flag(C, high > 9);
-        if high > 9 {
-            high -= 10;
-        }
-        self.sr.set_flag(X, self.sr.flag(C));
-        let r = ((high << 4) | low) & 0xFF;
+        let low = (src & 15) + (dst & 15) + self.sr.flag(X) as u32;
+        let raw = low + (src & 0xf0) + (dst & 0xf0);
+        let corrected = raw + if low > 9 { 6 } else { 0 };
+        let carry = corrected > 0x9f;
+        let r = corrected.wrapping_sub(if carry { 0xa0 } else { 0 }) & 0xff;
+        self.sr.set_flag(C, carry);
+        self.sr.set_flag(X, carry);
         self.sr.set_flag(N, r & 0x80 != 0);
-        // Z is sticky: only a zero result from a zero destination sets it.
-        self.sr.set_flag(Z, r == 0 && (dst & 0xFF) == 0);
-        self.sr.set_flag(V, false);
+        self.sr.set_flag(Z, self.sr.flag(Z) && r == 0);
+        self.sr.set_flag(V, (!raw & r) & 0x80 != 0);
         r
     }
 
     /// `BCD subtract`: `dst - src - X`.
     pub(crate) fn bcd_sub(&mut self, src: u32, dst: u32) -> u32 {
-        let x = self.sr.flag(X) as u32;
-        let mut low = (dst & 0x0F) as i32 - (src & 0x0F) as i32 - x as i32;
-        let mut high = ((dst >> 4) & 0x0F) as i32 - ((src >> 4) & 0x0F) as i32;
-        if low < 0 {
-            low += 10;
-            high -= 1;
-        }
-        if high < 0 {
-            high += 10;
-        }
-        self.sr.set_flag(C, (src & 0xFF) + x > (dst & 0xFF));
-        self.sr.set_flag(X, self.sr.flag(C));
-        let r = (((high & 0x0F) << 4) | (low & 0x0F)) & 0xFF;
+        let low = (dst & 15)
+            .wrapping_sub(src & 15)
+            .wrapping_sub(self.sr.flag(X) as u32);
+        let correction = if low > 15 { 6 } else { 0 };
+        let raw = low.wrapping_add(dst & 0xf0).wrapping_sub(src & 0xf0);
+        let carry = raw > 0xff || raw < correction;
+        let corrected = raw.wrapping_add(if raw > 0xff { 0xa0 } else { 0 });
+        let r = corrected.wrapping_sub(correction) & 0xff;
+        self.sr.set_flag(C, carry);
+        self.sr.set_flag(X, carry);
         self.sr.set_flag(N, r & 0x80 != 0);
-        self.sr.set_flag(Z, r == 0 && (dst & 0xFF) == 0);
-        self.sr.set_flag(V, false);
-        r as u32
+        self.sr.set_flag(Z, self.sr.flag(Z) && r == 0);
+        self.sr.set_flag(V, (raw & !r) & 0x80 != 0);
+        r
     }
 }
 
@@ -1956,8 +2090,7 @@ mod usp_tests {
         assert_eq!(cpu.a[6], 0x0012_3456, "move usp,a6 writes a6");
     }
 
-    /// Only the To-USP direction needs privilege, and in supervisor mode it
-    /// simply writes. `move.l a0,usp` puts a0's value into the USP - here
+    /// In supervisor mode, `move.l a0,usp` puts a0's value into the USP - here
     /// a0 = 0, so the old USP contents must be gone.
     #[test]
     fn move_to_usp_writes_in_supervisor_mode() {

@@ -1,0 +1,18 @@
+[package]
+name = "kb-ram-probe"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[[bin]]
+name = "kb-ram-probe"
+path = "src/main.rs"
+
+[[bin]]
+name = "kb-z80-conditions"
+path = "src/z80_conditions.rs"
+
+[dependencies]
+mdcore = { path = "../../../crates/mdcore" }
+serde_json = "1"

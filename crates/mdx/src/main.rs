@@ -32,6 +32,12 @@ struct Cli {
 enum RamCommand {
     /// Run the cartridge, then report what its work RAM holds.
     Dump {
+        /// Resume a machine state artifact ID or JSON path (ROM must match).
+        #[arg(long, value_name = "ID_OR_PATH")]
+        from_state: Option<String>,
+        /// Publish a resumable machine state artifact at the end of the run.
+        #[arg(long)]
+        save_state: bool,
         /// Path to a Mega Drive ROM image.
         #[arg(long, value_name = "PATH")]
         rom: PathBuf,
@@ -52,6 +58,13 @@ enum RamCommand {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Create a standalone native Bevy game starter in your workspace.
+    Template {
+        #[arg(long)]
+        directory: PathBuf,
+        #[arg(long, default_value = "mdx-game")]
+        name: String,
+    },
     /// Serve the typed operation registry over MCP stdio.
     Mcp {
         #[arg(long, default_value_t = 2)]
@@ -64,11 +77,23 @@ enum Command {
     },
     /// Capture bounded instruction records as a JSONL artifact.
     Trace {
+        /// Resume a machine state artifact ID or JSON path (ROM must match).
+        #[arg(long, value_name = "ID_OR_PATH")]
+        from_state: Option<String>,
+        /// Publish a resumable machine state artifact at the end of the run.
+        #[arg(long)]
+        save_state: bool,
         #[arg(long)]
         args: String,
     },
     /// Observe exact folded WRAM bus writes as a JSONL artifact.
     Watch {
+        /// Resume a machine state artifact ID or JSON path (ROM must match).
+        #[arg(long, value_name = "ID_OR_PATH")]
+        from_state: Option<String>,
+        /// Publish a resumable machine state artifact at the end of the run.
+        #[arg(long)]
+        save_state: bool,
         #[arg(long)]
         args: String,
     },
@@ -121,15 +146,71 @@ enum Command {
         /// How many instructions to emit.
         #[arg(long, default_value_t = 64)]
         count: usize,
+        /// m68000 (default) or z80.
+        #[arg(long, default_value = "m68000")]
+        cpu: String,
+        /// Z80 address of the byte at --from (z80 from the ROM; default 0).
+        #[arg(long, value_name = "ADDR")]
+        origin: Option<String>,
+        /// Disassemble this machine state's Z80 RAM (z80; --from is a Z80 address).
+        #[arg(long, value_name = "ID_OR_PATH")]
+        from_state: Option<String>,
     },
     /// Processor core checks.
     #[command(subcommand)]
     Cpu(CpuCommand),
+    /// Capture synthesized stereo FM/PSG audio as a WAV artifact.
+    Audio {
+        #[arg(long)] rom: PathBuf,
+        #[arg(long)] from_state: Option<String>,
+        #[arg(long)] save_state: bool,
+        #[arg(long, default_value_t=120)] frames: u64,
+        #[arg(long, default_value_t=0)] start_frame: u64,
+        #[arg(long, default_value_t=5_000_000)] instructions: u64,
+        #[arg(long)] input: Option<PathBuf>,
+        /// Diagnostic RAM write at a frame boundary, FRAME:wram|z80:ADDRESS=HEXBYTES
+        /// (e.g. 120:z80:0x1C0A=98). Repeatable; not hardware behaviour.
+        #[arg(long, value_name = "FRAME:SPACE:ADDR=HEX")]
+        poke: Vec<String>,
+        /// Log 68000 writes into Z80 RAM, bank register, BUSREQ and RESET.
+        #[arg(long)]
+        sound_commands: bool,
+        /// Also export the capture's FM/PSG register writes as a VGM file.
+        #[arg(long)] vgm: bool,
+        /// Also write one WAV per voice (FM1..FM6, PSG1..PSG4).
+        #[arg(long)] stems: bool,
+        /// Console region at power-on: auto (from the header), usa, japan or
+        /// europe (PAL timing).
+        #[arg(long, default_value = "auto")]
+        region: String,
+        #[arg(long)] out: Option<PathBuf>,
+        #[arg(long)] timeout_ms: Option<u64>,
+    },
     /// Run the cartridge and report what it actually does.
     Boot {
+        /// Resume a machine state artifact ID or JSON path (ROM must match).
+        #[arg(long, value_name = "ID_OR_PATH")]
+        from_state: Option<String>,
+        /// Publish a resumable machine state artifact at the end of the run.
+        #[arg(long)]
+        save_state: bool,
         /// JSON controller state events indexed by completed frames (zero-based).
         #[arg(long, value_name = "PATH")]
         input: Option<PathBuf>,
+        /// Diagnostic RAM write at a frame boundary, FRAME:wram|z80:ADDRESS=HEXBYTES
+        /// (e.g. 120:z80:0x1C0A=98). Repeatable; not hardware behaviour.
+        #[arg(long, value_name = "FRAME:SPACE:ADDR=HEX")]
+        poke: Vec<String>,
+        /// Log 68000 writes into Z80 RAM, bank register, BUSREQ and RESET.
+        #[arg(long)]
+        sound_commands: bool,
+        /// Backup RAM image to load before running (<= 64 KiB, e.g. a .srm file).
+        #[arg(long, value_name = "PATH")]
+        sram: Option<PathBuf>,
+        /// Console region at power-on: auto (from the header), usa, japan or
+        /// europe (PAL timing).
+        #[arg(long, default_value = "auto")]
+        region: String,
         /// Path to a Mega Drive ROM image.
         #[arg(long, value_name = "PATH")]
         rom: PathBuf,
@@ -317,8 +398,16 @@ fn main() {
             }
         }
         Command::Survey { args } => run_json_operation("survey", &args, &context),
-        Command::Trace { args } => run_json_operation("trace", &args, &context),
-        Command::Watch { args } => run_json_operation("watch", &args, &context),
+        Command::Trace {
+            args,
+            from_state,
+            save_state,
+        } => run_json_with_state("trace", &args, from_state, save_state, &context),
+        Command::Watch {
+            args,
+            from_state,
+            save_state,
+        } => run_json_with_state("watch", &args, from_state, save_state, &context),
         Command::Artifact(ArtifactCommand::Import { path }) => run_operation(
             "artifact.import",
             serde_json::json!({"path":path}),
@@ -387,6 +476,14 @@ fn main() {
             Ok(value) => run_operation(&operation, value, &context),
             Err(error) => usage_failure("mdx.call", error.to_string()),
         },
+        Command::Template { directory, name } => match mdx::artifacts::absolute(&directory) {
+            Ok(directory) => run_operation(
+                "template.create",
+                serde_json::json!({"directory":directory,"name":name}),
+                &context,
+            ),
+            Err(error) => usage_failure("mdx.template.create", error.message),
+        },
         Command::Graphics {
             snapshot,
             from,
@@ -419,8 +516,18 @@ fn main() {
             compare_cycles,
             &context,
         ),
+        Command::Audio { rom,from_state,save_state,frames,start_frame,instructions,input,poke,sound_commands,vgm,stems,region,out,timeout_ms } => {
+            let pokes = match parse_pokes(&poke) { Ok(p) => p, Err(e) => std::process::exit(usage_failure("mdx/audio", e)) };
+            emit(&operations::execute("audio",serde_json::json!({"rom":rom,"from_state":from_state,"save_state":save_state,"frames":frames,"start_frame":start_frame,"instructions":instructions,"input":input,"pokes":pokes,"sound_commands":sound_commands.then(|| serde_json::json!({})),"vgm":vgm,"stems":stems,"region":region,"out":out,"timeout_ms":timeout_ms}),&context))
+        }
         Command::Boot {
+            from_state,
+            save_state,
             input,
+            poke,
+            sound_commands,
+            sram,
+            region,
             rom,
             instructions,
             frames,
@@ -439,27 +546,53 @@ fn main() {
             &stop_at,
             frames,
             input.as_deref(),
+            &poke,
+            sound_commands,
+            sram.as_deref(),
+            &region,
+            from_state.as_deref(),
+            save_state,
             &context,
         ),
         Command::Ram(RamCommand::Dump {
+            from_state,
+            save_state,
             rom,
             instructions,
             stop_at,
             find,
             range,
-        }) => run_ram_dump(&rom, instructions, stop_at, find, range, &context),
-        Command::Disasm { rom, from, count } => {
+        }) => run_ram_dump(
+            &rom,
+            instructions,
+            stop_at,
+            find,
+            range,
+            from_state.as_deref(),
+            save_state,
+            &context,
+        ),
+        Command::Disasm { rom, from, count, cpu, origin, from_state } => {
             let Some(addr) = parse_u32(&from) else {
                 std::process::exit(usage_failure(
                     "mdx.disasm",
                     format!("invalid address {from:?}"),
                 ));
             };
-            run_operation(
-                "disasm",
-                serde_json::json!({"rom":rom,"from":addr,"count":count}),
-                &context,
-            )
+            let origin = match origin.as_deref().map(parse_u32) {
+                None => 0,
+                Some(Some(origin)) if origin <= 0xFFFF => origin,
+                Some(_) => std::process::exit(usage_failure(
+                    "mdx.disasm",
+                    "origin must be a Z80 address 0x0000..0xFFFF".into(),
+                )),
+            };
+            let mut args = serde_json::json!({"rom":rom,"from":addr,"count":count,"cpu":cpu});
+            if cpu == "z80" {
+                args["origin"] = origin.into();
+                args["from_state"] = from_state.into();
+            }
+            run_operation("disasm", args, &context)
         }
         Command::Header { rom } => run_header(&rom, &context),
         Command::Schema {
@@ -510,6 +643,8 @@ fn run_ram_dump(
     stop_at: Option<String>,
     find: Option<String>,
     range: Option<String>,
+    from_state: Option<&str>,
+    save_state: bool,
     context: &Context,
 ) -> i32 {
     let bad = |what: &str| Failure {
@@ -540,7 +675,7 @@ fn run_ram_dump(
     };
     run_operation(
         "ram.dump",
-        serde_json::json!({"rom":rom,"instructions":instructions,"stop_at":stop_at,"find":find,"range":range}),
+        serde_json::json!({"rom":rom,"instructions":instructions,"stop_at":stop_at,"find":find,"range":range,"from_state":from_state,"save_state":save_state}),
         context,
     )
 }
@@ -570,8 +705,18 @@ fn run_boot(
     stop_at: &[String],
     frames: Option<u64>,
     input: Option<&Path>,
+    pokes: &[String],
+    sound_commands: bool,
+    sram: Option<&Path>,
+    region: &str,
+    from_state: Option<&str>,
+    save_state: bool,
     context: &Context,
 ) -> i32 {
+    let pokes = match parse_pokes(pokes) {
+        Ok(pokes) => pokes,
+        Err(message) => return usage_failure(commands::boot::TOOL, message),
+    };
     let stops: Vec<u32> = match stop_at
         .iter()
         .map(|a| {
@@ -586,9 +731,17 @@ fn run_boot(
     run_operation(
         "boot",
         serde_json::json!({"rom":rom,"instructions":instructions,"trace":trace,"out":out,
-        "trace_registers":trace_registers,"force_branch":force_branches,"stop_at":stops,"frames":frames,"input":input}),
+        "trace_registers":trace_registers,"force_branch":force_branches,"stop_at":stops,"frames":frames,"input":input,"pokes":pokes,"sound_commands":sound_commands.then(|| serde_json::json!({})),"sram":sram,"region":region,"from_state":from_state,"save_state":save_state}),
         context,
     )
+}
+
+/// Parse repeated `--poke FRAME:SPACE:ADDR=HEX` flags.
+fn parse_pokes(pokes: &[String]) -> Result<Vec<commands::input::Poke>, String> {
+    pokes
+        .iter()
+        .map(|text| commands::input::Poke::parse(text).map_err(|failure| failure.message))
+        .collect()
 }
 
 fn run_header(rom: &Path, context: &Context) -> i32 {
@@ -615,4 +768,27 @@ fn emit_failed(tool: &str, failure: Failure) -> i32 {
     let envelope: Envelope<serde_json::Value> = Envelope::failure(tool, failure);
     emit(&envelope);
     envelope.exit.code()
+}
+
+fn run_json_with_state(
+    name: &str,
+    args: &str,
+    from_state: Option<String>,
+    save_state: bool,
+    context: &Context,
+) -> i32 {
+    let mut value: serde_json::Value = match serde_json::from_str(args) {
+        Ok(value) => value,
+        Err(e) => return usage_failure(name, e.to_string()),
+    };
+    let Some(object) = value.as_object_mut() else {
+        return usage_failure(name, "arguments must be a JSON object".into());
+    };
+    if let Some(source) = from_state {
+        object.insert("from_state".into(), source.into());
+    }
+    if save_state {
+        object.insert("save_state".into(), true.into());
+    }
+    run_operation(name, value, context)
 }

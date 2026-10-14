@@ -1,0 +1,10 @@
+{
+  "original_cpu_sha256": "8c09b9d86e8c77366eff430f62c3b5742adce1ccdee849c246e24dcba74fcf15",
+  "instrumented_cpu_sha256": "cd680a779124061d6283f3db62bbb69549207ef7610ded43e55474c92ff9533e",
+  "hook_sha256": "bacbe8bbe3a907cdc9fc78efd10b688839f5aa7c6de2c41710ea932eb51ebb82",
+  "core_sha256": "d4036e4752702c24b48887880278f2331392b0740f37e2b192e0a534840b67b6",
+  "record_layout": "18 little-endian u32: pc,sr,d0..d7,a0..a7; pre-instruction",
+  "limitations": [
+    "instrumented controlled replay; CPU state only; no cycle equivalence claim"
+  ]
+}

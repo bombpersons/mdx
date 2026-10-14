@@ -5,13 +5,43 @@ import pathlib
 import struct
 import tempfile
 import unittest
+import wave
 from md_bytes import word_bytes
 from mdx_trace_to_binary import convert
 from oracle_vdp_snapshot import normalize
-from libretro_abi import AvInfo, Geometry, Timing, Variable
+from libretro_abi import AvInfo, Geometry, Timing, Variable, AudioSample, AudioSampleBatch
+from pcm_capture import WaveCapture
 
 
 class ObserverTests(unittest.TestCase):
+    def test_audio_callbacks_preserve_signed_stereo_and_consume_excluded_frames(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path=pathlib.Path(folder)/'audio.wav'
+            capture=WaveCapture(path,1,2);capture.configure(48000)
+            raw=(ctypes.c_int16*6)(-32768,32767,-123,456,0,0)
+            batch=AudioSampleBatch(capture.batch);single=AudioSample(capture.single)
+            capture.begin_frame(0);self.assertEqual(batch(raw,3),3)
+            self.assertEqual(capture.frames,0)
+            capture.begin_frame(1);self.assertEqual(batch(raw,3),3);single(-99,88)
+            capture.begin_frame(2);self.assertEqual(batch(raw,3),3)
+            capture.close()
+            with wave.open(str(path),'rb') as wav:
+                self.assertEqual((wav.getnchannels(),wav.getsampwidth(),wav.getframerate(),wav.getnframes()),(2,2,48000,4))
+                self.assertEqual(wav.readframes(4),struct.pack('<8h',-32768,32767,-123,456,0,0,-99,88))
+            self.assertEqual(capture.report()['nonzero_samples'],6)
+            self.assertEqual(capture.report()['peak'],32768)
+
+    def test_audio_ranges_and_sample_rate_changes_are_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path=pathlib.Path(folder)/'audio.wav'
+            with self.assertRaises(ValueError):WaveCapture(path,3,3)
+            with self.assertRaises(ValueError):WaveCapture(path,-1,3)
+            capture=WaveCapture(path,0,1)
+            with self.assertRaises(ValueError):capture.configure(48000.5)
+            capture.configure(48000);capture.configure(48000)
+            with self.assertRaises(ValueError):capture.configure(44100)
+            capture.close()
+
     def test_libretro_av_and_variable_layout_match_the_public_c_abi(self):
         self.assertEqual(ctypes.sizeof(Geometry),20)
         self.assertEqual(ctypes.sizeof(Timing),16)

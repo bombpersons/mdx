@@ -1,0 +1,166 @@
+{
+  "date": "2026-10-13",
+  "moves": [
+    {
+      "from": "reverse_kings",
+      "to": "mdx/.legacy/reverse_kings",
+      "reason": "Preserve original Git history, modified toolkit snapshot and builds"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/rom",
+      "to": "mdx/rom"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/cache",
+      "to": "mdx/cache"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/.mdx",
+      "to": "mdx/.mdx"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/.venv",
+      "to": "mdx/.venv"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/testdata",
+      "to": "mdx/testdata"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/external_agent_notes",
+      "to": "mdx/external_agent_notes"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/notes",
+      "to": "mdx/notes"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/.cortexkit",
+      "to": "mdx/.cortexkit"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/Earthworm Jim (USA).zip",
+      "to": "mdx/rom/archives/Earthworm Jim (USA).zip"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/King's Bounty - The Conqueror's Quest (USA, Europe)_other.zip",
+      "to": "mdx/rom/archives/King's Bounty - The Conqueror's Quest (USA, Europe)_other.zip"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/Cadash (USA, Korea).zip",
+      "to": "mdx/rom/archives/Cadash (USA, Korea).zip"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/King's Bounty (U) [!].zip",
+      "to": "mdx/rom/archives/King's Bounty (U) [!].zip"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/King's Bounty - The Conqueror's Quest (USA, Europe).zip",
+      "to": "mdx/rom/archives/King's Bounty - The Conqueror's Quest (USA, Europe).zip"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/Kings-Bounty_DOS_EN.zip",
+      "to": "mdx/rom/archives/Kings-Bounty_DOS_EN.zip"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/Hokuto no Ken - Shin Seikimatsu Kyuuseishu Densetsu (Japan).7z",
+      "to": "mdx/rom/archives/Hokuto no Ken - Shin Seikimatsu Kyuuseishu Densetsu (Japan).7z"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/King's Bounty - The Conqueror's Quest (USA, Europe).md",
+      "to": "mdx/rom/original/King's Bounty - The Conqueror's Quest (USA, Europe).md"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/dos",
+      "to": "mdx/rom/dos"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/docs/external-agent-review.md",
+      "to": "mdx/docs/external-agent-review.md"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/docs/screenshots",
+      "to": "mdx/docs/screenshots"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/docs/investigation-log.md",
+      "to": "mdx/docs/investigation-log.md"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/docs/ACTIVE_HANDOFF.md",
+      "to": "mdx/docs/ACTIVE_HANDOFF.md"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/docs/cadash-agent-review.md",
+      "to": "mdx/docs/cadash-agent-review.md"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/docs/HANDOFF.md",
+      "to": "mdx/docs/HANDOFF.md"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/docs/mdx.md",
+      "to": "mdx/docs/history/reverse_kings-mdx.md"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/docs/sound-bus-review.md",
+      "to": "mdx/docs/sound-bus-review.md"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/docs/WORK_LOG.md",
+      "to": "mdx/docs/WORK_LOG.md"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/docs/other-agent-review.md",
+      "to": "mdx/docs/other-agent-review.md"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/docs/fidelity-review.md",
+      "to": "mdx/docs/fidelity-review.md"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/docs/evidence",
+      "to": "mdx/docs/evidence"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/docs/overworld-map.md",
+      "to": "kings_bounty/docs/overworld-map.md"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/analysis",
+      "to": "kings_bounty/analysis"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/tools/parse_symbols.py",
+      "to": "kings_bounty/tools/parse_symbols.py"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/tools/kb_rider_assets.py",
+      "to": "kings_bounty/tools/kb_rider_assets.py"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/tools/template_smoke.py",
+      "to": "mdx/tools/template_smoke.py"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/tools/mcp_smoke.py",
+      "to": "mdx/tools/mcp_smoke.py"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/tools/cartridge_survey.py",
+      "to": "mdx/tools/cartridge_survey.py"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/tools/probes",
+      "to": "mdx/tools/probes"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/tools/fetch_archive_roms.py",
+      "to": "mdx/tools/fetch_archive_roms.py"
+    },
+    {
+      "from": "mdx/.legacy/reverse_kings/crates/mdcore/examples",
+      "to": "mdx/crates/mdcore/examples"
+    }
+  ]
+}

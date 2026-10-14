@@ -9,3 +9,22 @@ __pycache__/
 *.pyc
 *.swp
 .DS_Store
+
+# Preserved pre-split working tree and Git history (includes historical ROMs).
+/.legacy/
+/.cortexkit/
+# ROM images and downloaded game archives must never be added.
+*.bin
+*.gen
+*.smd
+*.32x
+*.zip
+*.7z
+# Mega Drive images use .md too; keep Markdown documentation eligible.
+/rom/
+
+# Authored reference tables are test inputs, not cartridge ROMs.
+!/crates/mdcore/tests/fixtures/*.bin
+
+# Machine-local OpenCode path override.
+/opencode.json

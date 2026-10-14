@@ -1,0 +1,38 @@
+{
+  "date": "2026-10-13",
+  "release_build": "passed",
+  "default_rust_suite": {
+    "passed": 178,
+    "failed": 0,
+    "ignored": 22
+  },
+  "python_observer_tests": {
+    "passed": 4,
+    "failed": 0
+  },
+  "mcp_smoke": {
+    "passed": true,
+    "tools": 18,
+    "cartridges": 4,
+    "walking": true,
+    "report": ".mdx/reorganisation/mcp-smoke.json"
+  },
+  "rom_images_ignored": 2780,
+  "pinned_rom_replay_reference_digests": {
+    "verified": 27
+  },
+  "symbol_extractor": "successfully reads sibling ROM; original symbols.json restored after verification",
+  "global_codex_registration": {
+    "status": "blocked",
+    "reason": "/home/maisy/.codex is mounted read-only in this session",
+    "installer": "tools/install-codex-mcp.sh"
+  },
+  "optional_cartridge_gates": {
+    "passed": 13,
+    "failed": 0,
+    "original_image_gates": 12,
+    "additional_fidelity_checkpoints": 17,
+    "distinct_image_checkpoints": 27,
+    "log": ".mdx/reorganisation/cartridge-gates.log"
+  }
+}

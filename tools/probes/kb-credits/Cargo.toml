@@ -1,0 +1,10 @@
+[package]
+name = "kb-credits-probe"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+mdcore = { path = "../../../crates/mdcore" }
+serde_json = "1"

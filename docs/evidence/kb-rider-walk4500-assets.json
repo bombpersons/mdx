@@ -1,0 +1,93 @@
+{
+  "schema": "kb.rider.snapshot-assets.v1",
+  "graphics_report": {
+    "path": "docs/evidence/kb-walk4500-graphics.json",
+    "sha256": "e7f061933796593951c4696e9470021cfc721b35cebae03435a4db2a50e5f467"
+  },
+  "screen": {
+    "path": ".mdx/oracle-walk4500.png",
+    "sha256": "b8fb8f013be04a5663fc7e907d5b2367c4c1822560deab222bb83a08a7eca191"
+  },
+  "asset": {
+    "path": ".mdx/native-rider-walk4500/rider-8ec022bbdd359256.png",
+    "sha256": "8ec022bbdd359256e4df40a56ffe84959399e825585a2d6b9cf771d395c9d264",
+    "bytes": 939
+  },
+  "bounds": [
+    104,
+    104,
+    48,
+    32
+  ],
+  "sprites": [
+    {
+      "attributes": {
+        "high_priority": false,
+        "horizontal_flip": false,
+        "palette": 0,
+        "raw": 808,
+        "tile": 808,
+        "vertical_flip": false,
+        "vram_address": 52340
+      },
+      "columns": 3,
+      "index": 14,
+      "link": 15,
+      "rows": 4,
+      "tiles": [
+        808,
+        809,
+        810,
+        811,
+        812,
+        813,
+        814,
+        815,
+        816,
+        817,
+        818,
+        819
+      ],
+      "x": 104,
+      "y": 104
+    },
+    {
+      "attributes": {
+        "high_priority": false,
+        "horizontal_flip": false,
+        "palette": 0,
+        "raw": 820,
+        "tile": 820,
+        "vertical_flip": false,
+        "vram_address": 52348
+      },
+      "columns": 3,
+      "index": 15,
+      "link": 16,
+      "rows": 4,
+      "tiles": [
+        820,
+        821,
+        822,
+        823,
+        824,
+        825,
+        826,
+        827,
+        828,
+        829,
+        830,
+        831
+      ],
+      "x": 128,
+      "y": 104
+    }
+  ],
+  "verification": {
+    "opaque_pixels": 615,
+    "different_pixels": 0
+  },
+  "limitations": [
+    "one captured animation phase; source ROM addresses and complete animation sequence remain unmapped"
+  ]
+}

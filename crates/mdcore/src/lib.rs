@@ -7,6 +7,7 @@
 
 pub mod cart_hw;
 pub mod cart_db;
+pub mod svp;
 pub mod eeprom;
 pub mod cartridge;
 pub mod audio;

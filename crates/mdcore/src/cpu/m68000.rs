@@ -71,6 +71,11 @@ pub struct M68000 {
     /// Interrupt processing since the last RTE (status word I/N bit).
     #[serde(default)]
     pub(crate) instr_mode_no: bool,
+    /// Keep the hardware's two-word prefetch queue across instructions
+    /// (SingleStepTests fixtures) instead of the reference core's single
+    /// cached word, which refetches the following word after each opcode.
+    #[serde(default)]
+    pub hardware_prefetch: bool,
     /// Halted by a double fault; only reset clears it.
     #[serde(default)]
     pub halted: bool,
@@ -107,6 +112,7 @@ impl M68000 {
             aerr_mode: false,
             instr_mode_no: false,
             halted: false,
+            hardware_prefetch: false,
         }
     }
 
@@ -132,14 +138,16 @@ impl M68000 {
 
     /// Load the prefetch queue for the instruction about to be executed.
     pub fn prime<B: Bus>(&mut self, bus: &mut B) {
-        self.prefetch[0] = bus.read16(self.pc);
-        self.prefetch[1] = bus.read16(self.pc.wrapping_add(2));
+        self.prefetch[0] = bus.fetch16(self.pc);
+        self.prefetch[1] = bus.fetch16(self.pc.wrapping_add(2));
     }
 
     /// Redirect execution, reloading the prefetch queue rather than rotating it.
     #[inline]
     pub fn set_pc<B: Bus>(&mut self, bus: &mut B, addr: u32) {
-        self.pc = addr & !1;
+        // The reference does not check (or align) the program counter: an
+        // odd PC keeps executing through its odd-address fetch view.
+        self.pc = addr;
         bus.note_pc(self.pc);
         self.prime(bus);
     }
@@ -153,7 +161,7 @@ impl M68000 {
     pub(crate) fn next_word<B: Bus>(&mut self, bus: &mut B) -> u16 {
         let word = self.prefetch[0];
         self.prefetch[0] = self.prefetch[1];
-        self.prefetch[1] = bus.read16(self.pc.wrapping_add(4));
+        self.prefetch[1] = bus.fetch16(self.pc.wrapping_add(4));
         self.pc = self.pc.wrapping_add(2);
         bus.note_pc(self.pc);
         word
@@ -167,6 +175,9 @@ impl M68000 {
         self.instr_mode_no = true;
         let old_sr = self.sr.0;
         self.set_status((old_sr & !0x8700) | 0x2000 | ((level as u16) << 8));
+        if self.odd_stack_halts() {
+            return;
+        }
         let sp = self.a[7];
         bus.write32(sp.wrapping_sub(4), self.pc);
         bus.write16(sp.wrapping_sub(6), old_sr);
@@ -190,6 +201,13 @@ impl M68000 {
         let old_sr = self.sr.0;
         let fc = if old_sr & 0x2000 != 0 { 5 } else { 1 };
         self.set_status((old_sr & !0x8000) | 0x2000);
+        if self.a[7] & 1 != 0 {
+            // Its own first push faults again: halt.
+            self.a[7] = self.a[7].wrapping_sub(4);
+            self.halted = true;
+            self.stopped = true;
+            return;
+        }
         let status = if fault.write { 0 } else { 0x10 } | if self.instr_mode_no { 0x08 } else { 0 } | fc;
         let mut sp = self.a[7];
         sp = sp.wrapping_sub(4);
@@ -214,6 +232,9 @@ impl M68000 {
         debug_assert!((4..=47).contains(&vector));
         let old_sr = self.sr.0;
         self.set_status((old_sr & !0x8000) | 0x2000);
+        if self.odd_stack_halts() {
+            return;
+        }
         let sp = self.a[7];
         bus.write32(sp.wrapping_sub(4), return_pc);
         bus.write16(sp.wrapping_sub(6), old_sr);
@@ -221,6 +242,23 @@ impl M68000 {
         self.stopped = false;
         let handler = bus.read32(u32::from(vector) * 4);
         self.set_pc(bus, handler);
+    }
+
+    /// A group 1/2 exception or interrupt frame pushed to an odd stack: the
+    /// reference's first push faults (address error), whose own push faults
+    /// again and halts; each attempt has already moved SP down by four.
+    fn odd_stack_halts(&mut self) -> bool {
+        if self.a[7] & 1 == 0 {
+            return false;
+        }
+        self.a[7] = self.a[7].wrapping_sub(4);
+        if !self.aerr_mode {
+            self.aerr_mode = true;
+            self.a[7] = self.a[7].wrapping_sub(4);
+        }
+        self.halted = true;
+        self.stopped = true;
+        true
     }
 
     /// Write SR's implemented bits and swap active stacks when S changes.
@@ -278,8 +316,8 @@ impl M68000 {
                 if !trap {
                     self.pc = start;
                 }
-                self.prefetch[0] = bus.read16(self.pc);
-                self.prefetch[1] = bus.read16(self.pc.wrapping_add(2));
+                self.prefetch[0] = bus.fetch16(self.pc);
+                self.prefetch[1] = bus.fetch16(self.pc.wrapping_add(2));
                 StepOutcome {
                     cycles: if trap { self.trap_cycles } else { 0 },
                     extension_words: 0,
@@ -354,6 +392,7 @@ impl M68000 {
             Ea::Data(r) => self.d[*r as usize] & size.mask(),
             Ea::Address(r) => self.a[*r as usize] & size.mask(),
             Ea::Memory(addr) => self.read_sized(bus, *addr, size),
+            Ea::Program(addr) => self.read_program(bus, *addr, size),
             Ea::Immediate(v) => *v & size.mask(),
         }
     }
@@ -397,7 +436,7 @@ impl M68000 {
                 };
             }
             Ea::Address(_) | Ea::Immediate(_) => {}
-            Ea::Memory(addr) => self.write_sized(bus, *addr, size, value),
+            Ea::Memory(addr) | Ea::Program(addr) => self.write_sized(bus, *addr, size, value),
         }
     }
 
@@ -416,7 +455,7 @@ impl M68000 {
                 let new = f(old) & size.mask();
                 self.write_ea(bus, ea, size, new);
             }
-            Ea::Memory(addr) => {
+            Ea::Memory(addr) | Ea::Program(addr) => {
                 let old = self.read_sized(bus, *addr, size);
                 let new = f(old) & size.mask();
                 self.write_sized(bus, *addr, size, new);
@@ -489,6 +528,26 @@ impl M68000 {
     }
     pub(crate) fn wr32<B: Bus>(&mut self, bus: &mut B, addr: u32, value: u32) {
         if !self.fault_check(addr, true) { bus.write32(addr, value) }
+    }
+
+    /// PC-relative operand read through the program view. The reference
+    /// reads these without an address check (odd words use the odd fetch).
+    pub(crate) fn read_program<B: Bus>(&mut self, bus: &mut B, addr: u32, size: Size) -> u32 {
+        if self.fault.is_some() {
+            return 0;
+        }
+        match size {
+            Size::Byte => bus.fetch16(addr & !1).to_be_bytes()[(addr & 1) as usize] as u32,
+            Size::Word => bus.fetch16(addr) as u32,
+            Size::Long => (bus.fetch16(addr) as u32) << 16 | bus.fetch16(addr.wrapping_add(2)) as u32,
+        }
+    }
+
+    /// Long store to a predecrement destination (MOVE.L, MOVEM.L): the
+    /// reference writes the low word first, so an odd address faults there.
+    pub(crate) fn write_long_pd<B: Bus>(&mut self, bus: &mut B, addr: u32, value: u32) {
+        self.wr16(bus, addr.wrapping_add(2), value as u16);
+        self.wr16(bus, addr, (value >> 16) as u16);
     }
 
     pub(crate) fn read_sized<B: Bus>(&mut self, bus: &mut B, addr: u32, size: Size) -> u32 {

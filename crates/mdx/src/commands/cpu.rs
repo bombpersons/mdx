@@ -597,6 +597,7 @@ fn check(case: &Value, file: &str, relocate: bool, compare_cycles: bool) -> Opti
         .unwrap_or_else(|| "????".into());
 
     let mut cpu = M68000::new(initial.get("pc").and_then(Value::as_u64).unwrap_or(0) as u32);
+    cpu.hardware_prefetch = true;
     for (i, r) in REGISTERS.iter().enumerate() {
         cpu.d[i] = num(initial, r);
         let an = format!("a{i}");

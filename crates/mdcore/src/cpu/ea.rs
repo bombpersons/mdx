@@ -50,6 +50,9 @@ pub enum Ea {
     Memory(u32),
     /// An immediate operand, already read from the instruction stream.
     Immediate(u32),
+    /// A PC-relative memory address: the reference reads it from the
+    /// program view (bank base pointers), like the instruction stream.
+    Program(u32),
 }
 
 impl Ea {
@@ -58,7 +61,7 @@ impl Ea {
     }
 
     pub fn is_memory(&self) -> bool {
-        matches!(self, Ea::Memory(_))
+        matches!(self, Ea::Memory(_) | Ea::Program(_))
     }
 }
 
@@ -181,12 +184,12 @@ impl crate::cpu::m68000::M68000 {
             }
             Mode::ProgramCounterRelative => {
                 let disp = self.next_word(bus) as i16 as i32;
-                Ea::Memory(self.pc.wrapping_sub(2).wrapping_add(disp as u32))
+                Ea::Program(self.pc.wrapping_sub(2).wrapping_add(disp as u32))
             }
             Mode::ProgramCounterRelativeIndex => {
                 // The base is the address of the extension word itself.
                 let base = self.pc;
-                Ea::Memory(self.brief_index(bus, base))
+                Ea::Program(self.brief_index(bus, base))
             }
         }
     }

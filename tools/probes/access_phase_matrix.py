@@ -8,7 +8,8 @@ VBLANK edge, and a DMA fill started so late in a line that the reference's
 first-update budget wraps (whole fill at once, BUSY to the frame edge), and
 3-/6-button pad reads (header-selected type, TH pulse counter and its
 timeout, TH input switching latency), and control-port commands (a register
-write retargets data writes to the invalid code 2; A15-A14 latch)."""
+write retargets data writes to the invalid code 2; A15-A14 latch), and 68000
+address errors (group-0 frame, register state at the fault, timing)."""
 import argparse
 from pathlib import Path
 from timing_matrix import ROOT, authored_rom, run_matrix
@@ -150,7 +151,28 @@ def ctrl_case(case):
     return code + MARK
 
 
+AERR_HANDLER = [0x32F9, 0x00C0, 0x0008] + [0x32DF] * 7 + [0x22C8, 0x22C0,
+                0x33FC, 0xC0DE, 0x00FF, 0xF040, 0x60FE]
+
+
+def aerr_case(case):
+    code = LEA_A1_OUT + [0x7055]                   # moveq #$55,d0
+    code += [NOP] * case['pad']
+    code += {
+        'read_w_postinc': [0x41F9, 0x00FF, 0xF101, 0x3018],       # move.w (a0)+,d0
+        'write_l_abs': [0x41F9, 0x00FF, 0xF100, 0x23FC, 0x1234, 0x5678, 0x00FF, 0xF201],
+        'read_l_predec': [0x41F9, 0x00FF, 0xF103, 0x2020],        # move.l -(a0),d0
+        'write_w_d16': [0x41F9, 0x00FF, 0xF100, 0x3140, 0x0003],  # move.w d0,3(a0)
+    }[case['form']]
+    return code + [0x4E71, 0x60FE]
+
+
 def program(case):
+    if case['kind'] == 'aerr':
+        rom = bytearray(authored_rom(case['code'], AERR_HANDLER))
+        rom[0x0C:0x10] = rom[0x78:0x7c]
+        rom[0x78:0x7c] = bytes(4)
+        return bytes(rom)
     if case['kind'] == 'pad':
         rom = bytearray(authored_rom(case['code']))
         rom[0x190:0x192] = b'J6' if case['six'] else b'J '
@@ -195,7 +217,10 @@ def cases():
                              'replay': [{'frame': 0, 'buttons': buttons}] if buttons else []})
     for form in ('register', 'latch'):
         rows.append({'kind': 'ctrl', 'form': form})
-    builders = {'ctrl': ctrl_case, 'pad': pad_case, 'status': status_case, 'irq': irq_case, 'fm': fm_case, 'hint': hint_case,
+    for form in ('read_w_postinc', 'write_l_abs', 'read_l_predec', 'write_w_d16'):
+        for pad in (0, 1, 2):
+            rows.append({'kind': 'aerr', 'form': form, 'pad': pad})
+    builders = {'aerr': aerr_case, 'ctrl': ctrl_case, 'pad': pad_case, 'status': status_case, 'irq': irq_case, 'fm': fm_case, 'hint': hint_case,
                 'fill': fill_case, 'z80fm': z80fm_case}
     for row in rows:
         row['code'] = builders[row['kind']](row)

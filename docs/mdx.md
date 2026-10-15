@@ -238,8 +238,11 @@ reference's generic fixes for invalid ranges, and by default for ROMs of at
 most 2 MiB without a declaration (at $200000). It occupies the 64 KiB bank of its
 start address. SRAM that overlaps the ROM (Phantasy Star IV, World Series
 Baseball) is switched in by bit 0 of $A130F1 and write-protected by bit 1.
-Writes above $A130F1 select the standard 512 KiB banks; the reference's fallback
-multi-game mapper below $A13060 is not applied.
+Writes above $A130F1 select the standard 512 KiB banks, and writes below $A13060
+apply the reference's fallback multi-game 64 KiB mapper. Like the reference,
+these mappers index the ROM buffer without mirroring (0xFF padding up to the
+power-of-two size, zeros beyond), and a mapper that repoints the SRAM bank
+leaves SRAM data reads in place while instruction fetches see the ROM.
 
 Serial (I2C) EEPROM saves follow the reference's game table (EA, Sega, Acclaim
 16M/32M and Codemasters boards, chips X24C01 to 24C65) and its header fallback
@@ -247,7 +250,10 @@ Serial (I2C) EEPROM saves follow the reference's game table (EA, Sega, Acclaim
 board with an X24C01). The EEPROM array is the same 64 KiB backup buffer, so the
 `sram` artifact, `sram` input and machine states cover it. Codemasters J-Cart
 titles expose controllers 3 and 4 at $380000; replay ports 2 and 3 drive them.
-Other title-specific exceptions, SVP and lock-on are not modeled.
+The reference's 71-entry cartridge database (protection registers, Realtec,
+SF-001/002/004, Super Mario World 64 and other mappers), the SVP coprocessor
+(Virtua Racing) and its light guns (Justifier, Menacer, attached by title) are
+modeled; Sonic & Knuckles lock-on beyond ROM mirroring is not.
 `boot` publishes an `sram` memory artifact when the cartridge has backup RAM,
 and accepts `sram` (CLI `--sram`) to load up to 64 KiB of saved contents first.
 Machine states carry SRAM and bank state; older states restore power-on values.

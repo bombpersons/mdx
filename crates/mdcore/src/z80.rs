@@ -636,7 +636,7 @@ impl Z80 {
         self.iff1 = false;
         self.iff2 = false;
         self.halted = false;
-        self.r = (self.r & 0x80) | (self.r.wrapping_add(1) & 0x7f);
+        // The reference's take_interrupt does not advance R.
         self.push(bus, self.pc);
         let vector = match self.im {
             IM_1 => 0x38,

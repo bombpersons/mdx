@@ -204,6 +204,9 @@ pub fn vectors(rom: &[u8], word_to_region: impl Fn(u32) -> Option<&'static str>)
 }
 
 /// A loaded ROM image with its identity.
+/// Tags a ROM offset that indexes the reference's buffer without mirroring.
+pub const RAW_OFFSET: u32 = 0x8000_0000;
+
 #[derive(Debug, Clone)]
 pub struct Cartridge {
     pub path: PathBuf,
@@ -256,8 +259,21 @@ impl Cartridge {
     /// Byte at a ROM offset (which bank mappers can place beyond 4 MiB),
     /// mirrored at the power-of-two period with an FF tail.
     pub fn offset_byte(&self, offset: u32) -> u8 {
+        if offset & RAW_OFFSET != 0 {
+            return self.buffer_byte((offset & !RAW_OFFSET) as usize);
+        }
         let offset = offset as usize % self.mirror_period();
         self.data.get(offset).copied().unwrap_or(0xff)
+    }
+
+    /// The reference's linear ROM buffer: the image, 0xFF padding up to the
+    /// power-of-two size, then the (zeroed) rest of the buffer.
+    pub fn buffer_byte(&self, offset: usize) -> u8 {
+        match self.data.get(offset) {
+            Some(&byte) => byte,
+            None if offset < self.mirror_period() => 0xFF,
+            None => 0,
+        }
     }
 
     /// Power-of-two image period (minimum 64 KiB, 4 MiB for Sonic & Knuckles)

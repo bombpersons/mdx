@@ -6,7 +6,8 @@
 //! sequencing at line 0 and the VBLANK edge, and the late DMA-fill start whose
 //! first-update budget wraps, and 3-/6-button pad reads (header-selected
 //! type, TH pulse counter and timeout, TH input switching latency), and
-//! control-port commands (register writes retarget data writes; A15-A14 latch).
+//! control-port commands (register writes retarget data writes; A15-A14 latch),
+//! and 68000 address errors (group-0 frame, registers at the fault, timing).
 use mdcore::{Cartridge, System};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -49,25 +50,35 @@ fn authored_rom(code: &[u16], handler: Option<&[u16]>) -> Vec<u8> {
 }
 
 const HANDLER: [u16; 7] = [0x23EF, 0x0002, 0x00FF, 0xF020, 0x5278, 0xF030, 0x4E73];
+const AERR_HANDLER: [u16; 17] = [
+    0x32F9, 0x00C0, 0x0008, 0x32DF, 0x32DF, 0x32DF, 0x32DF, 0x32DF, 0x32DF, 0x32DF, 0x22C8, 0x22C0,
+    0x33FC, 0xC0DE, 0x00FF, 0xF040, 0x60FE,
+];
 const HINT_HANDLER: [u16; 8] = [0xB3FC, 0x00FF, 0xF040, 0x6406, 0x32F9, 0x00C0, 0x0008, 0x4E73];
 
 #[test]
 fn access_phases_match_independent_observations() {
     let fixture: Value = serde_json::from_str(include_str!("fixtures/access_phase.json")).unwrap();
     let cases = fixture["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 160);
+    assert_eq!(cases.len(), 172);
     for case in cases {
         let code: Vec<u16> =
             case["code"].as_array().unwrap().iter().map(|w| w.as_u64().unwrap() as u16).collect();
         let handler = match case["kind"].as_str() {
             Some("irq") => Some(&HANDLER[..]),
             Some("hint") => Some(&HINT_HANDLER[..]),
+            Some("aerr") => Some(&AERR_HANDLER[..]),
             _ => None,
         };
         let mut bytes = authored_rom(&code, handler);
         if case["kind"] == "pad" {
             let io: &[u8] = if case["six"] == true { b"J6" } else { b"J " };
             bytes[0x190..0x192].copy_from_slice(io);
+        }
+        if case["kind"] == "aerr" {
+            // Address error vector instead of level 6.
+            bytes.copy_within(0x78..0x7c, 0x0C);
+            bytes[0x78..0x7c].fill(0);
         }
         if case["kind"] == "hint" {
             // Level-4 autovector instead of level 6.

@@ -97,7 +97,7 @@ pub struct Vdp {
     cpu_clock_remainder: u64,
     /// Elapsed time in master-clock * 896 units (also supports dot-based tests).
     elapsed_scaled: u64,
-    visible_lines: u32,
+    pub(crate) visible_lines: u32,
     vint_deadline: Option<u64>,
     fifo_deadlines: [u64; 4],
     fifo_index: usize,
@@ -140,6 +140,21 @@ pub struct Vdp {
     /// at the frame edge must not include it.
     #[serde(default)]
     pub frame_start_dma_pending: bool,
+    /// The HV latch was forced by a light gun with reg0's latch bit clear;
+    /// it frees again on the gun's other lines.
+    #[serde(default)]
+    hvc_latch_forced: bool,
+    /// The reference rewrote the 68000's IPL lines (VINT, or a reg0/reg1
+    /// enable change while that interrupt is pending), dropping level 2.
+    #[serde(default)]
+    pub(crate) irq_line_written: bool,
+    /// The 68000 is still inside an instruction dispatched before the VINT
+    /// point (a delayed interrupt chain): the reference's m68k_run(vint_cycle)
+    /// completes it, interrupt acknowledge included, before raising VINT.
+    #[serde(default)]
+    pub(crate) hold_vint: bool,
+    #[serde(default)]
+    vint_held: bool,
 }
 
 /// Remaining fill/copy transfer (GPGX dma_length/dma_src for types 2 and 3).
@@ -576,9 +591,16 @@ impl Vdp {
             position -= MASTER_CYCLES_PER_LINE;
             next_line(&mut line, &mut visible);
         }
+        // One reference update per active line; VBLANK is a single update
+        // (capacity rounded once over the whole remaining blank period).
         while bytes != 0 {
             let rate = rate_at(line, visible);
-            let available = MASTER_CYCLES_PER_LINE - position;
+            let lines = if (visible..self.lines_per_frame() - 1).contains(&line) {
+                self.lines_per_frame() - 1 - line
+            } else {
+                1
+            };
+            let available = lines * MASTER_CYCLES_PER_LINE - position;
             let capacity = available * rate / MASTER_CYCLES_PER_LINE;
             if bytes < capacity {
                 elapsed += bytes * MASTER_CYCLES_PER_LINE / rate;
@@ -586,7 +608,9 @@ impl Vdp {
             }
             bytes -= capacity;
             elapsed += available;
-            next_line(&mut line, &mut visible);
+            for _ in 0..lines {
+                next_line(&mut line, &mut visible);
+            }
             position = 0;
         }
         self.internal_dma_master_cycles = elapsed;
@@ -614,9 +638,12 @@ impl Vdp {
                 .is_some_and(|at| self.elapsed_scaled >= at)
             {
                 self.vint_deadline = None;
-                self.vint_pending = true;
                 self.z80_irq = true;
-                self.vint_requests += 1;
+                if self.hold_vint {
+                    self.vint_held = true;
+                } else {
+                    self.raise_vint();
+                }
             }
             if self.dot >= DOTS_PER_LINE {
                 self.dot = 0;
@@ -728,6 +755,10 @@ impl Vdp {
             cached_write: None,
             internal_dma: None,
             frame_start_dma_pending: false,
+            hvc_latch_forced: false,
+            irq_line_written: false,
+            hold_vint: false,
+            vint_held: false,
         }
     }
 
@@ -779,6 +810,24 @@ impl Vdp {
         self.cached_write = None;
         self.internal_dma = None;
         self.frame_start_dma_pending = false;
+        self.hvc_latch_forced = false;
+        self.irq_line_written = false;
+        self.hold_vint = false;
+        self.vint_held = false;
+    }
+
+    fn raise_vint(&mut self) {
+        self.vint_pending = true;
+        self.irq_line_written = true;
+        self.vint_requests += 1;
+    }
+
+    /// End a VINT hold, raising a VINT that came due meanwhile.
+    pub(crate) fn release_vint_hold(&mut self) {
+        self.hold_vint = false;
+        if std::mem::take(&mut self.vint_held) {
+            self.raise_vint();
+        }
     }
 
     /// Read a control register.
@@ -869,12 +918,22 @@ impl Vdp {
         self.registers[index] = value;
         self.raster_register_write(index, old, value);
         let changed = old ^ value;
+        if (index == 0 && changed & 0x10 != 0 && self.hint_pending)
+            || (index == 1 && changed & 0x20 != 0 && self.vint_pending)
+        {
+            self.irq_line_written = true;
+        }
+        // GPGX reg0/reg1 writes: the newly enabled interrupt is asserted one
+        // instruction late, except that an asserting VINT (level 6) takes
+        // precedence over a HINT enable and is set without delay.
+        let vint_asserting = self.vint_pending && self.registers[1] & 0x20 != 0;
         if (index == 1 && changed & value & 0x20 != 0 && self.vint_pending)
-            || (index == 0 && changed & value & 0x10 != 0 && self.hint_pending)
+            || (index == 0 && changed & value & 0x10 != 0 && self.hint_pending && !vint_asserting)
         {
             self.irq_delay = true;
         }
         if index == 0 && (old ^ value) & 2 != 0 && self.registers[1] & 4 != 0 {
+            self.hvc_latch_forced = false;
             self.hvc_latch = if value & 2 != 0 {
                 Some(self.hv_live())
             } else {
@@ -882,6 +941,7 @@ impl Vdp {
             };
         }
         if index == 1 && (old ^ value) & 4 != 0 {
+            self.hvc_latch_forced = false;
             self.hvc_latch = if value & 4 == 0 {
                 Some(self.hv_counter())
             } else if self.registers[0] & 2 != 0 {
@@ -889,6 +949,19 @@ impl Vdp {
             } else {
                 None
             };
+        }
+    }
+
+    /// Light gun HV latch (GPGX lightgun_refresh): latched even with reg0's
+    /// latch bit clear, then freed on the gun's other lines.
+    pub(crate) fn gun_latch(&mut self, hv: u16) {
+        self.hvc_latch = Some(hv);
+        self.hvc_latch_forced = self.registers[0] & 2 == 0;
+    }
+
+    pub(crate) fn release_forced_latch(&mut self) {
+        if std::mem::take(&mut self.hvc_latch_forced) {
+            self.hvc_latch = None;
         }
     }
 

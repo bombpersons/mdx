@@ -41,6 +41,13 @@ fn bit_cycles(mode: u16, reg: u8, bit: u32, op: u32) -> u32 {
     }
 }
 
+/// Reference opcode legality (tools/gen_opcode_legality.py), one bit per opcode.
+static LEGAL_OPCODES: &[u8; 8192] = include_bytes!("legal.bin");
+
+fn opcode_is_legal(ir: u16) -> bool {
+    LEGAL_OPCODES[usize::from(ir >> 3)] & (1 << (ir & 7)) != 0
+}
+
 fn control_ea_cycles(mode: u16, reg: u8) -> u32 {
     match (mode, reg) {
         (5, _) | (7, 0 | 2) => 4,
@@ -145,10 +152,21 @@ pub fn cond_met(sr: crate::cpu::status::StatusRegister, cc: u8) -> bool {
 impl M68000 {
     pub(crate) fn execute<B: Bus>(&mut self, bus: &mut B) -> Step {
         let ir = self.prefetch[0];
-        // Consume the opcode word, rotating the prefetch queue. The word that
-        // takes its place is the one two words beyond the current pc.
-        self.prefetch[0] = self.prefetch[1];
-        self.prefetch[1] = bus.read16(self.pc.wrapping_add(4));
+        // Opcodes the reference core has no handler for (invalid EA modes or
+        // sizes) raise illegal instruction before decoding anything.
+        if !opcode_is_legal(ir) && ir >> 12 != 0xA && ir >> 12 != 0xF {
+            return Err(Exception::Illegal { opcode: ir });
+        }
+        // Consume the opcode word. The reference caches a single prefetch
+        // word (the opcode, read during the previous instruction), so the
+        // word after it is fetched now, after that instruction's writes (a
+        // bank switch takes effect here).
+        self.prefetch[0] = if self.hardware_prefetch {
+            self.prefetch[1]
+        } else {
+            bus.fetch16(self.pc.wrapping_add(2))
+        };
+        self.prefetch[1] = bus.fetch16(self.pc.wrapping_add(4));
         self.pc = self.pc.wrapping_add(2);
         bus.note_pc(self.pc);
 
@@ -160,6 +178,8 @@ impl M68000 {
             0x4 => self.op_misc(bus, ir),
             0x5 => self.op_quick(bus, ir),
             0x6 => self.op_branch(bus, ir),
+            // MOVEQ needs bit 8 clear; the rest of line 7 is illegal.
+            0x7 if ir & 0x0100 != 0 => Err(Exception::Illegal { opcode: ir }),
             0x7 => {
                 let data = (ir & 0xFF) as u8 as i8 as i32 as u32;
                 self.d[((ir >> 9) & 7) as usize] = data;
@@ -260,6 +280,18 @@ impl M68000 {
                 self.sr.set_ccr(result as u16);
             }
             return Ok((20, 1));
+        }
+
+        // Undefined immediate-group encodings raise illegal instruction:
+        // size %11, MOVES (68010+), An or non-alterable destinations
+        // (static BTST alone also reads PC-relative operands).
+        let valid = if sub == 4 {
+            mode != 1 && !(mode == 7 && (reg >= 4 || (reg >= 2 && (ir >> 6) & 3 != 0)))
+        } else {
+            sub != 7 && ir & 0xC0 != 0xC0 && mode != 1 && !(mode == 7 && reg >= 2)
+        };
+        if !valid {
+            return Err(Exception::Illegal { opcode: ir });
         }
 
         // BTST/BCHG/BCLR/BSET with a *static* bit number put that number in the
@@ -416,7 +448,15 @@ impl M68000 {
         let src_ea = self.effective_address(bus, src_mode, src_reg, size);
         let value = self.read_ea(bus, &src_ea, size);
         let dst_ea = self.effective_address(bus, dst_mode, dst_reg, size);
-        self.write_ea(bus, &dst_ea, size, value);
+        match dst_ea {
+            Ea::Memory(addr)
+                if size == Size::Long
+                    && dst_mode == crate::cpu::ea::Mode::AddressRegisterIndirectPredecrement =>
+            {
+                self.write_long_pd(bus, addr, value)
+            }
+            _ => self.write_ea(bus, &dst_ea, size, value),
+        }
         self.set_logic(size, value);
         Ok((cycles, 0))
     }
@@ -732,7 +772,7 @@ impl M68000 {
             };
             let ea = self.effective_address(bus, decode_mode(mode, reg), reg, Size::Long);
             let target = match ea {
-                Ea::Memory(a) => a,
+                Ea::Memory(a) | Ea::Program(a) => a,
                 _ => return Err(Exception::Illegal { opcode: ir }),
             };
             let call = ir & 0x0040 == 0;
@@ -798,13 +838,23 @@ impl M68000 {
         // from zero and selects REG_DA[15-i]. All other forms use REG_DA[i].
         let order: [u8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
+        let mut program = false;
         let mut addr = match mode {
             4 => self.a[reg as usize],
             3 => self.a[reg as usize],
             _ => match self.effective_address(bus, decode_mode(mode, reg), reg, size) {
                 Ea::Memory(addr) => addr,
+                Ea::Program(addr) => {
+                    program = true;
+                    addr
+                }
                 _ => return Err(Exception::Illegal { opcode: ir }),
             },
+        };
+        // GPGX's MOVEM opcode table: indexed modes add 6, not the usual 8.
+        let ea_cycles = match (mode, reg) {
+            (6, _) | (7, 3) => 6,
+            _ => control_ea_cycles(mode, reg),
         };
         let decrement = mode == 4;
 
@@ -826,7 +876,11 @@ impl M68000 {
                 // the saved frame unwritten.
                 if decrement {
                     addr = addr.wrapping_sub(step);
-                    self.write_sized(bus, addr, size, value);
+                    if size == Size::Long {
+                        self.write_long_pd(bus, addr, value);
+                    } else {
+                        self.write_sized(bus, addr, size, value);
+                    }
                 } else {
                     self.write_sized(bus, addr, size, value);
                     addr = addr.wrapping_add(step);
@@ -839,7 +893,7 @@ impl M68000 {
             if size == Size::Long {
                 self.refresh_block_cycles = Some(count * step * 2);
             }
-            return Ok((8 + count * step * 2 + control_ea_cycles(mode, reg), 1));
+            return Ok((8 + count * step * 2 + ea_cycles, 1));
         }
 
         let mut count = 0u32;
@@ -847,7 +901,11 @@ impl M68000 {
             if list & (1u16 << r) == 0 {
                 continue;
             }
-            let raw = self.read_sized(bus, addr, size);
+            let raw = if program {
+                self.read_program(bus, addr, size)
+            } else {
+                self.read_sized(bus, addr, size)
+            };
             // GPGX movem_16_er_* sign-extends every word load, including Dn.
             let value = if size == Size::Word {
                 raw as u16 as i16 as i32 as u32
@@ -862,6 +920,9 @@ impl M68000 {
             addr = addr.wrapping_add(step);
             count += 1;
         }
+        // The reference's extra bus read past the list (a data read even
+        // for PC-relative forms; it can touch hardware).
+        let _ = self.rd16(bus, addr);
         // Postincrement wins over a value loaded into the base register.
         // Non-postincrement forms must not advance an unlisted base register.
         if mode == 3 {
@@ -870,7 +931,7 @@ impl M68000 {
         if size == Size::Long {
             self.refresh_block_cycles = Some(count * step * 2);
         }
-        Ok((12 + count * step * 2 + control_ea_cycles(mode, reg), 1))
+        Ok((12 + count * step * 2 + ea_cycles, 1))
     }
 
     // ------------------------------------------------------------- group 5
@@ -931,7 +992,7 @@ impl M68000 {
             let cc = ((ir >> 8) & 0xF) as u8;
             let ea = self.effective_address(bus, decode_mode(mode, reg), reg, Size::Byte);
             let set = cond_met(self.sr, cc);
-            if let Ea::Data(_) | Ea::Memory(_) = ea {
+            if let Ea::Data(_) | Ea::Memory(_) | Ea::Program(_) = ea {
                 self.write_ea(bus, &ea, Size::Byte, if set { 0xFF } else { 0 });
             }
             return Ok((
@@ -2216,8 +2277,8 @@ mod rts_stack_tests {
 
         let out = cpu.step(&mut bus);
         assert!(out.exception.is_none(), "rts must not fault here");
-        // The PC's low bit is always cleared, so the odd 0xBEEF lands as 0xBEEE.
-        assert_eq!(cpu.pc, 0x2F00_BEEE, "the whole longword is popped");
+        // The reference neither checks nor aligns the PC: 0xBEEF stays odd.
+        assert_eq!(cpu.pc, 0x2F00_BEEF, "the whole longword is popped");
         assert_eq!(cpu.a[7], 0x0100_0000, "a7 advances by four");
     }
 
@@ -3220,5 +3281,29 @@ mod caller_probe {
             println!("    ${pc:06X} at {at:>10}  d0={d0:08X} d1={d1:08X} a0={a0:08X} a4={a4:08X}");
         }
         println!("  reached bsr.w to preamble B: {reached_call}  after {n} instructions");
+    }
+}
+
+#[cfg(test)]
+mod legality_tests {
+    use super::*;
+    use crate::cpu::{Bus, SparseBus};
+
+    /// Encodings the reference core has no handler for raise illegal
+    /// instruction (vector 4) with the PC left at the opcode.
+    #[test]
+    fn reference_unhandled_encodings_are_illegal() {
+        // AND.B A3,D4; MOVEQ with bit 8 set; ORI to a non-alterable mode.
+        for op in [0xC80Bu16, 0x7F00, 0x00FF] {
+            let mut bus = SparseBus::new();
+            bus.write16(0x1000, op);
+            let mut cpu = M68000::new(0x1000);
+            cpu.a[7] = 0x8000;
+            cpu.prime(&mut bus);
+            let out = cpu.step(&mut bus);
+            assert_eq!(out.exception, Some(Exception::Illegal { opcode: op }), "{op:04x}");
+            assert_eq!(cpu.pc, 0x1000);
+        }
+        assert!(opcode_is_legal(0x4E71) && opcode_is_legal(0x7E02) && !opcode_is_legal(0x4AFC));
     }
 }

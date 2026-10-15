@@ -28,3 +28,6 @@ __pycache__/
 
 # Machine-local OpenCode path override.
 /opencode.json
+
+# Generated reference opcode legality table (tools/gen_opcode_legality.py).
+!crates/mdcore/src/cpu/legal.bin

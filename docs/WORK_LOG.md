@@ -626,3 +626,51 @@ executables now point to this checkout; no installer step remains outstanding.
   Sega Channel, MD Soft Checker, Klax beta, Taipingyang, Top Pro Golf (capture
   taken after an instruction stalled across the frame edge by 68000 DMA), and 7
   titles the oracle harness cannot run.
+- SVP (SSP1601) coprocessor: interpreter, DRAM/cell views, XST/PM0 registers,
+  800 instructions after each line (run inside the line loop, before the next
+  line's DMA update), and the SVP DMA quirk (address advanced by reg15, one
+  word fewer, before timing). Queued DMA words from SVP DRAM are read when the
+  VDP takes them. Virtua Racing (all variants) exact against the reference
+  through frame 3600.
+- 68000 address errors (group-0 frame, abort at the fault, double fault halts).
+- Port C reads apply the output latch; serial registers store writes.
+- A 68000 bus stall crossing the frame edge pauses there and finishes on the
+  next step (captures at the edge; Top Pro Golf, Virtua Racing).
+- Program view: instruction fetches and PC-relative operands read each bank's
+  base (ROM mirror), bypassing read handlers (serial EEPROM over $200000:
+  Meganet "Game no Kanzume" dumps). The PC is never checked or aligned; odd
+  fetches return the byte-swapped host halfword (bytes a-1 and a+2), running
+  off a bank into the next host buffer. Power-on USP is 0. Undefined
+  immediate-group encodings raise illegal instruction.
+- Light guns the reference attaches by title: Justifier (Lethal Enforcers,
+  Snatcher) and Menacer (eight titles), aimed at the previous viewport's
+  centre, with the HV latch (forced when reg0 latch is off) and the level-2
+  external interrupt ORed into the IPL bits until acknowledge or a VDP line
+  rewrite.
+- Program view extended: banks $80-$DF fetch from work RAM (their reference base
+  pointer), $40-$7F from the linear ROM buffer; open bus uses the same view.
+- Mapper banks (multi-game 64 KiB, 512 KiB paging) index the reference ROM
+  buffer unmirrored (0xFF to the power-of-two size, zeros beyond); a mapper
+  repointing the SRAM bank keeps SRAM data reads while fetches see ROM (Sega
+  Channel programs exact).
+- One cached prefetch word, as the reference: the word after an opcode is
+  fetched after the previous instruction's writes (bank switches). The
+  SingleStepTests harness keeps the hardware two-word queue.
+- MOVE.L/MOVEM.L to -(An) write the low word first (fault address, I/O order).
+  Illegal instruction and privilege violation enter "not instruction" mode.
+  Exception frames pushed to an odd stack fault and halt like the reference.
+- Opcode legality generated from the reference's opcode table
+  (tools/gen_opcode_legality.py -> cpu/legal.bin): 6579 encodings mdx used to
+  execute now raise illegal instruction, as the reference does.
+- MOVEM: indexed modes cost 6 EA cycles, the extra read past the list is
+  performed, PC-relative data uses the program view.
+- An SR write that unmasks a pending interrupt acknowledges it immediately
+  (inside the instruction), so the next line's HINT is raised afresh (Metal
+  Fangs). Z80 interrupt entry does not advance R (Go Net).
+- README.md rewritten for humans; README_FOR_AGENTS.md holds the detailed tour.
+- Fill/copy busy: VBLANK is one reference update (capacity rounded once;
+  Darius). Reset loads the full 32-bit PC (Dino Dini's Soccer); power-on SR is
+  $2704 (the reference's zeroed flags read as Z). A VINT that comes due inside
+  a delayed-interrupt chain is raised after that chain's acknowledge
+  (m68k_run(vint_cycle); Radica SF2). A reg0 HINT enable is not delayed while
+  VINT asserts (Speedball 2).

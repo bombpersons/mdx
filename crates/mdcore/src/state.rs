@@ -19,6 +19,8 @@ pub struct MachineState {
     fm: Fm,
     audio: crate::audio::AudioState,
     pending_dma_master_cycles: u32,
+    #[serde(default)]
+    stall_carry: u32,
     dma_overlaps_instruction: bool,
     pending_bus_cpu_cycles: u32,
     z80_master_clock: u64,
@@ -28,10 +30,14 @@ pub struct MachineState {
     master_cycles: u64,
     refresh_deadline: u64,
     pending_irq_ack: Option<(u8, u64)>,
+    #[serde(default)]
+    irq_acked: bool,
     pending_fifo_master_cycles: u32,
     /// Absent in states saved before cartridge hardware; restored at power-on values.
     #[serde(default)]
     cart_hw: Option<crate::cart_hw::CartHw>,
+    #[serde(default)]
+    svp: Option<crate::svp::Svp>,
 }
 
 impl System {
@@ -60,6 +66,7 @@ impl System {
             fm: self.fm.clone(),
             audio: self.audio.save_state(),
             pending_dma_master_cycles: self.pending_dma_master_cycles,
+            stall_carry: self.stall_carry,
             dma_overlaps_instruction: self.dma_overlaps_instruction,
             pending_bus_cpu_cycles: self.pending_bus_cpu_cycles,
             z80_master_clock: self.z80_master_clock,
@@ -69,8 +76,10 @@ impl System {
             master_cycles: self.master_cycles,
             refresh_deadline: self.refresh_deadline,
             pending_irq_ack: self.pending_irq_ack,
+            irq_acked: self.irq_acked,
             pending_fifo_master_cycles: self.pending_fifo_master_cycles,
             cart_hw: Some(self.cart_hw.clone()),
+            svp: self.svp.as_deref().cloned(),
         })
     }
 
@@ -125,6 +134,7 @@ impl System {
         system.fm = state.fm;
         system.fm_offset = state.master_cycles.wrapping_sub(system.fm.clock());
         system.pending_dma_master_cycles = state.pending_dma_master_cycles;
+        system.stall_carry = state.stall_carry;
         system.dma_overlaps_instruction = state.dma_overlaps_instruction;
         system.pending_bus_cpu_cycles = state.pending_bus_cpu_cycles;
         system.z80_master_clock = state.z80_master_clock;
@@ -134,10 +144,15 @@ impl System {
         system.master_cycles = state.master_cycles;
         system.refresh_deadline = state.refresh_deadline;
         system.pending_irq_ack = state.pending_irq_ack;
+        system.irq_acked = state.irq_acked;
         system.pending_fifo_master_cycles = state.pending_fifo_master_cycles;
         if let Some(cart_hw) = state.cart_hw {
             system.cart_hw = cart_hw;
         }
+        if let Some(svp) = state.svp.filter(|svp| svp.valid()) {
+            system.svp = Some(Box::new(svp));
+        }
+        system.svp_line = system.vdp.master_clock() / 3420;
         Ok(system)
     }
 }

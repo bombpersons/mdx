@@ -113,6 +113,98 @@ fn gpgx_buttons(pressed: u8) -> u16 {
         | b(Button::B, 0x10) | b(Button::C, 0x20) | b(Button::A, 0x40) | b(Button::Start, 0x80)
 }
 
+/// Light guns the reference attaches to port B for known titles (GPGX
+/// loadrom.c autodetection, input_hw/lightgun.c). Nothing pulls the trigger,
+/// and the libretro frontend aims at the centre of the viewport latched at
+/// the previous frame edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub enum GunKind {
+    Menacer,
+    Justifier,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub struct LightGun {
+    pub kind: GunKind,
+    state: u8,
+    /// Selected Justifier (input device 4 or 5).
+    port: u8,
+    /// Aim in viewport pixels.
+    pub aim: (i32, i32),
+    /// Viewport (width, height) latched at the last frame edge.
+    viewport: (i32, i32),
+    offset: (i32, i32),
+}
+
+impl LightGun {
+    pub fn detect(international: &[u8]) -> Option<Self> {
+        let has = |name: &str| international.windows(name.len()).any(|w| w == name.as_bytes());
+        const MENACER: [(&str, i32, i32); 8] = [
+            ("MENACER", 82, 0),
+            ("T2 ; THE ARCADE GAME", 133, -8),
+            ("BODY COUNT", 68, -24),
+            ("CORPSE KILLER", 64, -8),
+            ("CRIME PATROL", 61, 0),
+            ("MAD DOG II THE LOST GOLD", 70, 18),
+            ("MAD DOG MCCREE", 49, 0),
+            ("WHO SHOT JOHNNY ROCK?", 60, 30),
+        ];
+        let (kind, offset) = if let Some(&(_, x, y)) = MENACER.iter().find(|(name, _, _)| has(name)) {
+            (GunKind::Menacer, (x, y))
+        } else if has("LETHAL ENFORCERS") || has("SNATCHER") {
+            (GunKind::Justifier, (if has("GUN FIGHTERS") { 24 } else { 0 }, 0))
+        } else {
+            return None;
+        };
+        // vdp_reset's 256x192 viewport is what the first frame's aim sees.
+        Some(Self { kind, state: 0x40, port: 4, aim: (128, 96), viewport: (256, 192), offset })
+    }
+
+    /// Port B input pins.
+    pub fn read(&self) -> u8 {
+        match self.kind {
+            // Buttons active high; TH reads 1 outside the active pixel.
+            GunKind::Menacer => 0x40,
+            // Gun detection while TH is high; else trigger/start (active low).
+            GunKind::Justifier if self.state & 0x40 != 0 => 0x30,
+            GunKind::Justifier => 0x73,
+        }
+    }
+
+    pub fn write(&mut self, data: u8, mask: u8) {
+        if self.kind == GunKind::Justifier {
+            let data = data & mask;
+            self.port = 4 + ((data >> 5) & 1);
+            self.state = data;
+        }
+    }
+
+    /// Frame edge: aim at the centre of the previous viewport, then latch
+    /// the new one.
+    pub fn frame_edge(&mut self, width: i32, height: i32) {
+        self.aim = (self.viewport.0 / 2, self.viewport.1 / 2);
+        self.viewport = (width, height);
+    }
+
+    /// The gun's line, when `line` is it (and inside the active display),
+    /// and the H counter it latches there.
+    pub fn hit(&self, line: i32, visible_lines: i32, h40: bool) -> Option<u16> {
+        let y = self.aim.1 + self.offset.1;
+        if y != line || y >= visible_lines {
+            return None;
+        }
+        let mut x = self.aim.0;
+        if self.kind == GunKind::Menacer {
+            x = x * 289 / 320;
+        }
+        let (dots, low_end, high_start) = if h40 { (210, 0xB6, 0xE5) } else { (171, 0x93, 0xE9) };
+        let index = ((x / 2) + self.offset.0).rem_euclid(dots);
+        let low = low_end + 1;
+        let h = if index < low { index } else { high_start + (index - low) };
+        Some(((y as u16) << 8) | h as u16)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,5 +256,35 @@ mod tests {
         assert_eq!(read_pad(0, 0x01, 0), 0x7e);
         assert_eq!(read_pad(0x40, 0x40, 0xff), 0x40);
         assert_eq!(read_pad(0, 0x40, 0xff), 0);
+    }
+
+    #[test]
+    fn light_guns_follow_the_reference_autodetection_and_counters() {
+        assert!(LightGun::detect(b"SOME OTHER GAME").is_none());
+        let mut gun = LightGun::detect(b"LETHAL ENFORCERS             ").unwrap();
+        assert_eq!(gun.kind, GunKind::Justifier);
+        // TH high reports gun detection; TH low the (released) buttons.
+        assert_eq!(gun.read(), 0x30);
+        gun.write(0x00, 0x40);
+        assert_eq!(gun.read(), 0x73);
+        // First frame aims at vdp_reset's 256x192 viewport; later frames at
+        // the viewport latched one edge earlier.
+        assert_eq!(gun.hit(96, 224, false), Some(0x6040));
+        gun.frame_edge(320, 224);
+        assert_eq!(gun.aim, (128, 96));
+        gun.frame_edge(320, 224);
+        assert_eq!(gun.aim, (160, 112));
+        assert_eq!(gun.hit(111, 224, true), None);
+        assert_eq!(gun.hit(112, 224, true), Some(0x7050));
+        let menacer = LightGun::detect(b"T2 ; THE ARCADE GAME").unwrap();
+        assert_eq!(menacer.kind, GunKind::Menacer);
+        assert_eq!(menacer.read(), 0x40);
+        // x = 128*289/320 = 115; (57 + 133) mod 171 = 19; y = 96 - 8.
+        assert_eq!(menacer.hit(88, 224, false), Some(0x5813));
+        // H40: x = 160*289/320 = 144; 72 + 82 = 154.
+        let mut far = LightGun::detect(b"MENACER").unwrap();
+        far.frame_edge(320, 224);
+        far.frame_edge(320, 224);
+        assert_eq!(far.hit(112, 224, true), Some(0x709A));
     }
 }

@@ -87,6 +87,15 @@ pub struct CartHw {
     pub sram_writable: bool,
     /// ROM offset restored at $200000 when SRAM is switched out.
     saved_bank: u32,
+    /// Banks a reference mapper pointed straight into its ROM buffer without
+    /// masking to the image (multi-game 64 KiB, 512 KiB paging): no mirror,
+    /// 0xFF padding up to the power-of-two size, then the empty buffer.
+    #[serde(default)]
+    raw_banks: u64,
+    /// A ROM mapper repointed the SRAM bank's base while its SRAM read
+    /// handlers stayed installed: data reads see SRAM, fetches the ROM.
+    #[serde(default)]
+    sram_base_replaced: bool,
     #[serde(default)]
     pub board: Board,
     /// Serial EEPROM state; its array is `sram`.
@@ -291,6 +300,8 @@ impl CartHw {
                 sram_mapped: false,
                 sram_writable: false,
                 saved_bank: 0x20_0000,
+                raw_banks: 0,
+                sram_base_replaced: false,
                 board,
                 eeprom: chip.map(I2c::new),
                 acclaim_rom_reads: true,
@@ -316,6 +327,8 @@ impl CartHw {
                 sram_mapped: false,
                 sram_writable: false,
                 saved_bank: 0x20_0000,
+                raw_banks: 0,
+                sram_base_replaced: false,
                 // J-Cart-only boards keep the ordinary backup RAM rules.
                 board,
                 eeprom: None,
@@ -354,6 +367,8 @@ impl CartHw {
             sram_mapped: mapped,
             sram_writable: mapped,
             saved_bank: 0x20_0000,
+            raw_banks: 0,
+            sram_base_replaced: false,
             board,
             eeprom: None,
             acclaim_rom_reads: true,
@@ -509,9 +524,28 @@ impl CartHw {
 
     /// The ROM offset a bank's base points at, ignoring read handlers (the
     /// reference's open-bus and instruction-prefetch view).
+    pub fn open_bus_bank(&self, bank: u32) -> bool {
+        self.open_bus_banks & (1 << bank) != 0
+    }
+
     pub fn raw_offset(&self, address: u32) -> u32 {
         let bank = (address >> 16) & 0x3F;
-        self.banks[bank as usize] + (address & 0xFFFF)
+        self.bank_offset(bank) + (address & 0xFFFF)
+    }
+
+    /// A bank's ROM offset, tagged `RAW_OFFSET` for unmirrored mapper banks.
+    fn bank_offset(&self, bank: u32) -> u32 {
+        let offset = self.banks[bank as usize];
+        if self.raw_banks & (1 << bank) != 0 { offset | crate::cartridge::RAW_OFFSET } else { offset }
+    }
+
+    /// `read` through the bank's base pointer (program view): a replaced
+    /// SRAM bank base points back at ROM.
+    pub fn read_base(&self, address: u32) -> Result<u8, u32> {
+        if self.sram_base_replaced && self.sram_bank(address) {
+            return Err(self.bank_offset((address >> 16) & 0x3F) + (address & 0xFFFF));
+        }
+        self.read(address)
     }
 
     pub fn read(&self, address: u32) -> Result<u8, u32> {
@@ -528,7 +562,7 @@ impl CartHw {
             let base = (bank << 16) | (((u32::from(data) | half) & 0x3F) << 15);
             return Err(base + (address & 0x7FFF));
         }
-        Err(self.banks[((address >> 16) & 0x3F) as usize] + (address & 0xFFFF))
+        Err(self.bank_offset(bank) + (address & 0xFFFF))
     }
 
     /// A byte write into the cartridge window; only mapped, writable SRAM takes it.
@@ -743,11 +777,17 @@ impl CartHw {
             for i in 0..8 {
                 self.banks[first + i] = page + ((i as u32) << 16);
             }
+            self.raw_banks |= 0xFF << first;
+            let sram_bank = (self.sram_start >> 16) as usize;
+            if self.sram_mapped && (first..first + 8).contains(&sram_bank) {
+                self.sram_base_replaced = true;
+            }
         } else if data & 1 != 0 {
             if self.has_sram() {
-                if !self.sram_mapped {
+                if !self.sram_mapped || self.sram_base_replaced {
                     self.saved_bank = self.banks[0x20];
                     self.sram_mapped = true;
+                    self.sram_base_replaced = false;
                 }
                 self.sram_writable = data & 2 == 0;
             }
@@ -761,6 +801,8 @@ impl CartHw {
     /// 64 consecutive 64 KiB banks starting at `first` (mapper_64k_multi_w).
     fn map_linear(&mut self, first: u32) {
         self.bank32 = None;
+        self.raw_banks = !0;
+        self.sram_base_replaced |= self.sram_mapped;
         for (i, bank) in self.banks.iter_mut().enumerate() {
             *bank = ((first + i as u32) & 0x3F) << 16;
         }

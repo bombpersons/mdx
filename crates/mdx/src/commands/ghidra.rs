@@ -181,6 +181,12 @@ macro_rules! with_input {
             #[arg(long = "volatile")]
             #[serde(default)]
             pub volatile: Vec<String>,
+            /// m68000: name functions from MacsBug symbols that Mac C compilers put
+            /// after each routine's rts (length byte 0x80|n, then the name).
+            /// Without it, an analysis that finds such names suggests it.
+            #[arg(long)]
+            #[serde(default)]
+            pub macsbug: bool,
             /// z80: ROM file offset (hex) of the driver bytes to analyse.
             #[arg(long)]
             #[serde(default)]
@@ -226,6 +232,7 @@ macro_rules! with_input {
                     banks: self.banks.clone(),
                     registers: self.registers.clone(),
                     volatile: self.volatile.clone(),
+                    macsbug: self.macsbug,
                     z80_rom_offset: self.z80_rom_offset.clone(),
                     z80_origin: self.z80_origin.clone(),
                     z80_size: self.z80_size,
@@ -251,6 +258,7 @@ struct Input {
     banks: Vec<String>,
     registers: Vec<String>,
     volatile: Vec<String>,
+    macsbug: bool,
     z80_rom_offset: Option<String>,
     z80_origin: Option<String>,
     z80_size: Option<u32>,
@@ -1371,6 +1379,53 @@ fn import(input: &Input, ctx: &Context) -> Result<Import> {
     })
 }
 
+/// MacsBug procedure names: after a routine's `rts`, `rtd #n`, `rte` or
+/// `jmp (a0)`, a byte 0x80|n, n name bytes, padding to even and a word giving
+/// the size of literal data that follows. The routine starts at the first
+/// `link a6` after the previous routine's tail, else right at that tail.
+/// Returns (start, end of the return instruction, name).
+fn macsbug_names(rom: &[u8]) -> Vec<(u32, u32, String)> {
+    let word = |i: usize| rom.get(i..i + 2).map(|b| u16::from_be_bytes([b[0], b[1]]));
+    let mut out = Vec::new();
+    let mut prev_end = 0usize;
+    let mut i = 0usize;
+    while i + 4 <= rom.len() {
+        let ret = match word(i) {
+            Some(0x4E75 | 0x4E73 | 0x4ED0) => 2,
+            Some(0x4E74) => 4,
+            _ => {
+                i += 2;
+                continue;
+            }
+        };
+        let end = i + ret;
+        let len = match rom.get(end) {
+            Some(&b) if (0x81..=0x9F).contains(&b) => (b & 0x7F) as usize,
+            _ => {
+                i += 2;
+                continue;
+            }
+        };
+        let Some(raw) = rom.get(end + 1..end + 1 + len) else { break };
+        // Mac names use % (e.g. %I_MUL4), which identifiers here do not.
+        let name: String = raw.iter().map(|&b| if b == b'%' { '_' } else { b as char }).collect();
+        if !raw.iter().all(|&b| b.is_ascii_alphanumeric() || b == b'_' || b == b'%' || b == b'.') || !valid_name(&name) {
+            i += 2;
+            continue;
+        }
+        let mut tail = end + 1 + len;
+        tail += tail & 1;
+        let literals = word(tail).unwrap_or(0) as usize;
+        let from = prev_end + (prev_end & 1);
+        let start = (from..end).step_by(2).find(|&k| word(k) == Some(0x4E56)).unwrap_or(from);
+        out.push((start as u32, end as u32, name));
+        prev_end = tail + 2 + literals;
+        i = prev_end.max(end + 2);
+        i += i & 1;
+    }
+    out
+}
+
 /// Ghidra's decompiler treats memory as volatile per block, so split each
 /// block (and every alias block mapped onto it) at the requested ranges and
 /// mark the middle pieces volatile.
@@ -1486,6 +1541,20 @@ fn valid_name(name: &str) -> bool {
 
 /// Name seeds: body-verified `.symbols.json`, or plain "ADDR NAME" lines.
 fn seed_symbols(input: &Input, imp: &mut Import, ctx: &Context) -> Result<()> {
+    // First, so explicit symbols below override a MacsBug name.
+    if input.cpu == Cpu::M68000 {
+        let found = macsbug_names(&imp.payload);
+        if input.macsbug {
+            for (start, _, name) in &found {
+                if contains(&imp.mapping.code_ranges, *start) {
+                    imp.symbols.push(json!({"address":start,"name":name,"kind":"function","source":"imported"}));
+                }
+            }
+            imp.provenance["macsbug_names"] = json!(found.len());
+        } else if found.len() >= 8 {
+            imp.warnings.push(format!("{} MacsBug routine names found after rts instructions (a Mac C toolchain left them in); pass macsbug: true to name functions from them", found.len()));
+        }
+    }
     for source in &input.symbols {
         let path = artifacts::resolve(&ctx.store, source)?;
         let text = String::from_utf8(artifacts::read_bounded(&path, FILE_LIMIT)?).map_err(|_| invalid(format!("{source}: not UTF-8")))?;
@@ -1605,11 +1674,12 @@ fn budget(input: &Input) -> Result<Instant> {
             || !input.banks.is_empty()
             || !input.registers.is_empty()
             || !input.volatile.is_empty()
+            || input.macsbug
             || !input.symbols.is_empty()
             || input.z80_rom_offset.is_some()
             || input.reanalyze)
     {
-        return Err(invalid("import options (from_state, evidence, ranges, entries, banks, registers, volatile, symbols, z80_*, reanalyze) require rom, not an analysis handle"));
+        return Err(invalid("import options (from_state, evidence, ranges, entries, banks, registers, volatile, macsbug, symbols, z80_*, reanalyze) require rom, not an analysis handle"));
     }
     Ok(Instant::now() + Duration::from_secs(input.timeout))
 }
@@ -2506,6 +2576,24 @@ mod tests {
         let rows = label_rows(&imp.mapping, vec![LabelPatch { addr: "FFFFE800".into(), name: "low".into(), size: Some(2), comment: None }]).unwrap();
         assert_eq!(rows.iter().map(|r| r["address"].as_u64().unwrap()).collect::<Vec<_>>(), [0xFF_E800, 0xFFFF_E800]);
         assert!(label_rows(&imp.mapping, vec![LabelPatch { addr: "800000".into(), name: "x".into(), size: None, comment: None }]).is_err());
+    }
+
+    /// MacsBug names follow the return; the routine starts at its link a6, the
+    /// next one after the literal block; % becomes _ and digits-first is not a name.
+    #[test]
+    fn macsbug_names_follow_returns() {
+        let mut rom = vec![0u8; 0x200];
+        rom.extend([0x4E, 0x71, 0x4E, 0x56, 0, 0, 0x70, 1, 0x4E, 0x5E, 0x4E, 0x75]); // nop; link; moveq; unlk; rts
+        rom.extend([0x85]);
+        rom.extend(b"Hello");
+        rom.extend([0, 2, 0xAA, 0xBB]); // two literal bytes
+        rom.extend([0x4E, 0x56, 0, 0, 0x4E, 0x75, 0x88]);
+        rom.extend(b"I%MUL4xy");
+        rom.extend([0, 0, 0, 0x4E, 0x75, 0x85]);
+        rom.extend(b"12345");
+        rom.extend([0; 8]);
+        let names = macsbug_names(&rom);
+        assert_eq!(names, [(0x202, 0x20C, "Hello".to_string()), (0x216, 0x21C, "I_MUL4xy".to_string())]);
     }
 
     /// A polled counter is volatile in WRAM and in its absolute-short alias;

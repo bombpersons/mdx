@@ -45,6 +45,11 @@ addresses, and each `jsr d16(An)`/`jmp d16(An)` is resolved to An+d16. A
 counts resolved sites and lists rejected ones: odd or non-code targets, which
 are table data rather than routines and never become functions.
 
+MacsBug names: games built with a Mac C toolchain (King's Bounty) keep each
+routine's name after its rts as a length byte 0x80|n and the name. Pass
+macsbug: true to name functions from them; an analysis without it warns
+when it finds such names. Explicit symbols override them.
+
 Polled RAM: work RAM is ordinary memory to Ghidra, so a wait loop on a
 counter that the VBlank handler changes (`move.l d0,FFE4EE` then
 `tst.l FFE4EE; bne`) decompiles as an infinite loop. Pass volatile

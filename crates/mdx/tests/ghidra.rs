@@ -114,6 +114,8 @@ fn live_ghidra_round_trip_uses_runtime_evidence() {
     assert!(caller["function_name"].is_string(), "{caller}");
     let analysis = data["analysis"].as_str().unwrap().to_string();
 
+    let brief = call("ghidra.decompile", json!({"analysis":analysis,"addr":"242","brief":true}), root);
+    assert!(brief["data"]["pseudocode"].is_string() && brief["data"]["listing"].is_null() && brief["data"]["mapping"].is_null(), "{brief}");
     let reset = call("ghidra.decompile", json!({"analysis":analysis,"addr":"200"}), root);
     let callees = reset["data"]["callees"]["items"].as_array().unwrap();
     assert!(callees.iter().any(|c| c["to"] == "0x00000220" && c["to_name"].is_string()), "{callees:?}");

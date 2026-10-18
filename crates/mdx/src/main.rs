@@ -58,12 +58,21 @@ enum RamCommand {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Create a standalone native Bevy game starter in your workspace.
+    /// Create or update a native Bevy port workspace (see `mdx guide port`).
     Template {
-        #[arg(long)]
-        directory: PathBuf,
-        #[arg(long, default_value = "mdx-game")]
-        name: String,
+        #[command(subcommand)]
+        command: TemplateCommand,
+    },
+    /// Set up this machine: `mdx setup mcp` registers this binary with Claude
+    /// Code, Codex and OpenCode.
+    Setup {
+        #[command(subcommand)]
+        command: SetupCommand,
+    },
+    /// Print built-in workflow guidance: overview (default) or port.
+    Guide {
+        #[arg(default_value = "overview")]
+        topic: String,
     },
     /// Serve the typed operation registry over MCP stdio.
     Mcp {
@@ -204,6 +213,11 @@ enum Command {
         /// Log 68000 writes into Z80 RAM, bank register, BUSREQ and RESET.
         #[arg(long)]
         sound_commands: bool,
+        /// Record a work RAM value at every frame boundary into a samples CSV,
+        /// as ADDRESS:TYPE:LABEL (e.g. 0xFFD008:s16:x; types u8 s8 u16 s16
+        /// u32 s32 fx8.8 fx16.16). Repeatable; needs --frames.
+        #[arg(long, value_name = "ADDR:TYPE:LABEL")]
+        sample: Vec<String>,
         /// Backup RAM image to load before running (<= 64 KiB, e.g. a .srm file).
         #[arg(long, value_name = "PATH")]
         sram: Option<PathBuf>,
@@ -262,6 +276,49 @@ enum Command {
         offset: usize,
         #[arg(long, default_value_t = 4)]
         limit: usize,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum SetupCommand {
+    /// Register this mdx as the `mdx` MCP server with each agent client found
+    /// (claude, codex, opencode), replacing an older mdx entry.
+    Mcp {
+        /// Only these clients (repeatable): claude, codex, opencode.
+        #[arg(long = "client", value_name = "CLIENT")]
+        clients: Vec<String>,
+        /// Show what would change without changing anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Print the result as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum TemplateCommand {
+    /// Write the workspace into DIRECTORY (may hold the ROM and notes).
+    Create {
+        #[arg(long)]
+        directory: PathBuf,
+        /// Cargo package name of the game crate.
+        #[arg(long, default_value = "mdx-game")]
+        name: String,
+        /// ntsc or pal.
+        #[arg(long, default_value = "ntsc")]
+        region: String,
+        /// Video frames per logic tick.
+        #[arg(long, default_value_t = 1)]
+        frames_per_tick: u32,
+    },
+    /// Update a created workspace to this mdx's template.
+    Update {
+        #[arg(long, default_value = ".")]
+        directory: PathBuf,
+        /// Report what would change without writing.
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -476,14 +533,64 @@ fn main() {
             Ok(value) => run_operation(&operation, value, &context),
             Err(error) => usage_failure("mdx.call", error.to_string()),
         },
-        Command::Template { directory, name } => match mdx::artifacts::absolute(&directory) {
+        Command::Template {
+            command:
+                TemplateCommand::Create {
+                    directory,
+                    name,
+                    region,
+                    frames_per_tick,
+                },
+        } => match mdx::artifacts::absolute(&directory) {
             Ok(directory) => run_operation(
                 "template.create",
-                serde_json::json!({"directory":directory,"name":name}),
+                serde_json::json!({"directory":directory,"name":name,"region":region,"frames_per_tick":frames_per_tick}),
                 &context,
             ),
             Err(error) => usage_failure("mdx.template.create", error.message),
         },
+        Command::Template {
+            command: TemplateCommand::Update { directory, dry_run },
+        } => match mdx::artifacts::absolute(&directory) {
+            Ok(directory) => run_operation(
+                "template.update",
+                serde_json::json!({"directory":directory,"dry_run":dry_run}),
+                &context,
+            ),
+            Err(error) => usage_failure("mdx.template.update", error.message),
+        },
+        Command::Setup {
+            command: SetupCommand::Mcp { clients, dry_run, json },
+        } => {
+            let binary = match std::env::current_exe().and_then(|p| p.canonicalize()) {
+                Ok(binary) => binary,
+                Err(error) => std::process::exit(usage_failure("mdx.setup", error.to_string())),
+            };
+            let outcomes = mdx::setup::mcp(&clients, &binary, dry_run);
+            let failed = outcomes.iter().any(|o| o.status == "failed");
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &serde_json::json!({"binary": binary, "dry_run": dry_run, "clients": outcomes})
+                    )
+                    .unwrap()
+                );
+            } else {
+                for outcome in &outcomes {
+                    println!("{:<9} {:<11} {}", outcome.client, outcome.status, outcome.detail);
+                    if outcome.status == "not_found" || outcome.status == "failed" {
+                        if let Some(command) = &outcome.command {
+                            println!("{:<21} run: {command}", "");
+                        }
+                    }
+                }
+            }
+            if failed { 1 } else { 0 }
+        }
+        Command::Guide { topic } => {
+            run_operation("guide", serde_json::json!({ "topic": topic }), &context)
+        }
         Command::Graphics {
             snapshot,
             from,
@@ -526,6 +633,7 @@ fn main() {
             input,
             poke,
             sound_commands,
+            sample,
             sram,
             region,
             rom,
@@ -548,6 +656,7 @@ fn main() {
             input.as_deref(),
             &poke,
             sound_commands,
+            &sample,
             sram.as_deref(),
             &region,
             from_state.as_deref(),
@@ -707,6 +816,7 @@ fn run_boot(
     input: Option<&Path>,
     pokes: &[String],
     sound_commands: bool,
+    samples: &[String],
     sram: Option<&Path>,
     region: &str,
     from_state: Option<&str>,
@@ -715,6 +825,14 @@ fn run_boot(
 ) -> i32 {
     let pokes = match parse_pokes(pokes) {
         Ok(pokes) => pokes,
+        Err(message) => return usage_failure(commands::boot::TOOL, message),
+    };
+    let samples = match samples
+        .iter()
+        .map(|text| commands::samples::SampleSpec::parse(text))
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(samples) => samples,
         Err(message) => return usage_failure(commands::boot::TOOL, message),
     };
     let stops: Vec<u32> = match stop_at
@@ -731,7 +849,7 @@ fn run_boot(
     run_operation(
         "boot",
         serde_json::json!({"rom":rom,"instructions":instructions,"trace":trace,"out":out,
-        "trace_registers":trace_registers,"force_branch":force_branches,"stop_at":stops,"frames":frames,"input":input,"pokes":pokes,"sound_commands":sound_commands.then(|| serde_json::json!({})),"sram":sram,"region":region,"from_state":from_state,"save_state":save_state}),
+        "trace_registers":trace_registers,"force_branch":force_branches,"stop_at":stops,"frames":frames,"input":input,"pokes":pokes,"sound_commands":sound_commands.then(|| serde_json::json!({})),"sram":sram,"region":region,"from_state":from_state,"save_state":save_state,"samples":samples}),
         context,
     )
 }

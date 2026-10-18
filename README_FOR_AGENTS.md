@@ -44,20 +44,31 @@ Default tests use authored synthetic cartridges, frozen oracle observations
 The release build of the whole workspace is slow-ish; when iterating on mdcore,
 `cargo build --release -q` then use the examples in `crates/mdcore/examples/`.
 
-## Operations (20)
+## Operations (22)
 
-`template.create`, `artifact.import`, `artifact.read`, `artifact.view`,
-`memory.read`, `memory.search`, `image.compare`, `memory.diff`, `survey`,
-`trace`, `watch`, `header`, `disasm`, `audio`, `boot`, `ram.dump`,
-`cpu.conformance`, `render`, `graphics`, `schema`.
+`template.create`, `template.update`, `guide`, `artifact.import`,
+`artifact.read`, `artifact.view`, `memory.read`, `memory.search`,
+`image.compare`, `memory.diff`, `survey`, `trace`, `watch`, `header`,
+`disasm`, `audio`, `boot`, `ram.dump`, `cpu.conformance`, `render`,
+`graphics`, `schema`.
 
 - Discover contracts: `mdx schema` (paginated) / `mdx schema boot`.
 - Invoke anything: `mdx call boot --args '{"rom":"/abs/game.md","frames":60}'`.
-- MCP: `mdx --root /abs/project mcp`; installers in `tools/install-*-mcp*`.
+- MCP: `mdx --root /abs/project mcp`; `mdx setup mcp` registers the running
+  binary with Claude Code, Codex and OpenCode. Releases: push a `v*` tag
+  matching `[workspace.package] version` (`.github/workflows/release.yml`);
+  `install.sh` / `install.ps1` install the latest release.
 - Always pass `project_root` (absolute) per call; artifacts live in
   `<project_root>/.mdx/artifacts`. ROM paths should be absolute.
 - `boot` is the workhorse: bounded run, screenshot (scanline renderer), memory
-  snapshot, diagnostics, `--save-state` / `--from-state` for resuming.
+  snapshot, diagnostics, `--save-state` / `--from-state` for resuming,
+  `--sample` for per-frame RAM values (trajectory tests).
+- Native ports: `mdx guide port`, then `template.create`. The template
+  (`templates/megadrive-bevy`) is a workspace: `md-bevy/` (template-owned,
+  replaced by `template.update`), `engine/` (with a sandbox that must build
+  without the game), `game/`, `tools/import/`. `build.rs` embeds every file
+  under the template directory except `target/`; keep the template building
+  and its tests passing (`cargo test --workspace --all-features` there).
 - `audio` captures stereo WAV, optional VGM and per-voice stems.
 - `trace`/`watch` give pre-instruction register JSONL and bus-write logs (68000
   and Z80).
@@ -151,7 +162,7 @@ detection quirks; Z80 MEMPTR and refresh register.
 ```
 crates/mdcore      emulation core (+ tests/, examples/)
 crates/mdx         CLI/MCP toolkit (+ tests/, testdata/)
-templates/         template.create sources (native Bevy game skeleton)
+templates/         template.create sources (native Bevy port workspace)
 tools/             oracle wrappers, probes, generators, installers
 docs/              handbook (mdx.md), work log, investigations, handoffs
 examples/          sample controller replay

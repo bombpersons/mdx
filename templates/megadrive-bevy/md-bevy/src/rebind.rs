@@ -3,8 +3,10 @@
 //! already used it) and saved. Build your own menu on top, or use the minimal
 //! example in `controls_menu.rs`.
 //!
-//! Saved bindings live in `bindings.json` under the platform config directory
-//! (see `config_path`) and are loaded at startup.
+//! Saved bindings live in `bindings.json` under the platform config directory,
+//! in a folder named after the game's package ([`BindingsFile`], which the
+//! launcher sets), and are loaded at startup. Without a `BindingsFile` (tests)
+//! bindings stay in memory.
 use crate::controller::{Button, ControllerBindings};
 use bevy::prelude::*;
 use std::path::PathBuf;
@@ -33,9 +35,20 @@ impl Rebind {
         self.capturing
     }
     /// Restore `ControllerBindings::default()` and save it.
-    pub fn reset(&mut self, bindings: &mut ControllerBindings) {
+    pub fn reset(&mut self, bindings: &mut ControllerBindings, file: &BindingsFile) {
         *bindings = ControllerBindings::default();
-        self.status = save(bindings);
+        self.status = save(bindings, file);
+    }
+}
+
+/// Where bindings are saved; `None` keeps them in memory.
+#[derive(Resource, Default, Clone, Debug)]
+pub struct BindingsFile(pub Option<PathBuf>);
+
+impl BindingsFile {
+    /// `bindings.json` in the config folder named after `package`.
+    pub fn for_package(package: &str) -> Self {
+        Self(config_dir().map(|dir| dir.join(package).join("bindings.json")))
     }
 }
 
@@ -44,14 +57,15 @@ pub struct RebindPlugin;
 impl Plugin for RebindPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Rebind>()
+            .init_resource::<BindingsFile>()
             .add_systems(Startup, load)
             .add_systems(PreUpdate, capture.after(bevy::input::InputSystems));
     }
 }
 
 /// `$XDG_CONFIG_HOME`/`~/.config` (Linux), `%APPDATA%` (Windows) or
-/// `~/Library/Application Support` (macOS), then the package name.
-pub fn config_path() -> Option<PathBuf> {
+/// `~/Library/Application Support` (macOS).
+pub fn config_dir() -> Option<PathBuf> {
     let base = if cfg!(windows) {
         std::env::var_os("APPDATA").map(PathBuf::from)
     } else if cfg!(target_os = "macos") {
@@ -61,11 +75,11 @@ pub fn config_path() -> Option<PathBuf> {
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
     };
-    base.map(|dir| dir.join(env!("CARGO_PKG_NAME")).join("bindings.json"))
+    base
 }
 
-fn load(mut bindings: ResMut<ControllerBindings>) {
-    let Some(path) = config_path() else { return };
+fn load(file: Res<BindingsFile>, mut bindings: ResMut<ControllerBindings>) {
+    let Some(path) = &file.0 else { return };
     let Ok(text) = std::fs::read_to_string(&path) else { return };
     match serde_json::from_str(&text) {
         Ok(saved) => *bindings = saved,
@@ -73,8 +87,8 @@ fn load(mut bindings: ResMut<ControllerBindings>) {
     }
 }
 
-fn save(bindings: &ControllerBindings) -> String {
-    let Some(path) = config_path() else {
+fn save(bindings: &ControllerBindings, file: &BindingsFile) -> String {
+    let Some(path) = &file.0 else {
         return "Not saved (no config directory)".into();
     };
     let written = path
@@ -90,6 +104,7 @@ fn save(bindings: &ControllerBindings) -> String {
 fn capture(
     keys: Res<ButtonInput<KeyCode>>,
     pads: Query<&Gamepad>,
+    file: Res<BindingsFile>,
     mut rebind: ResMut<Rebind>,
     mut bindings: ResMut<ControllerBindings>,
 ) {
@@ -101,11 +116,11 @@ fn capture(
     } else if let Some(key) = keys.get_just_pressed().next() {
         assign_key(&mut bindings, index, *key);
         rebind.capturing = None;
-        rebind.status = save(&bindings);
+        rebind.status = save(&bindings, &file);
     } else if let Some(pad_button) = pads.iter().find_map(|pad| pad.get_just_pressed().next()) {
         assign_pad(&mut bindings, index, *pad_button);
         rebind.capturing = None;
-        rebind.status = save(&bindings);
+        rebind.status = save(&bindings, &file);
     }
 }
 

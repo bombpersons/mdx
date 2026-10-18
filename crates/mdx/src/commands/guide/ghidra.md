@@ -53,9 +53,15 @@ when it finds such names. Explicit symbols override them.
 Polled RAM: work RAM is ordinary memory to Ghidra, so a wait loop on a
 counter that the VBlank handler changes (`move.l d0,FFE4EE` then
 `tst.l FFE4EE; bne`) decompiles as an infinite loop. Pass volatile
-ADDR[:LEN] (hex, e.g. FFE4EE:4) for such addresses; watch shows which PCs
-write them. The read then survives in pseudocode. Hardware ports are
-already volatile.
+ADDR[:LEN] (hex, e.g. FFE4EE:4) for such addresses, or let evidence find
+them: watch work RAM over a few frames (watch address 0, length 0x10000)
+and pass its records_artifact as evidence. Writes with in_interrupt true
+(made between an interrupt's entry and its rte) mark their bytes volatile;
+writes near the handler's stack pointer are taken as its stack frame and
+skipped. provenance.evidence.volatile_from_evidence lists each address with
+its length, writer_pc and write count. The read then survives in
+pseudocode. Hardware ports are already volatile. A from_state captured
+inside a handler starts outside it, so its first writes read false.
 
 RAM-resident code: give from_state (a state captured after the code was
 copied); work RAM is imported from it, and RAM PCs from evidence, extra

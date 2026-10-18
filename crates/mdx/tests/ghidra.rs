@@ -229,3 +229,49 @@ fn live_ghidra_resolves_base_register_thunks() {
     let entries: Vec<&str> = functions["data"]["functions"]["items"].as_array().unwrap().iter().map(|f| f["entry"].as_str().unwrap()).collect();
     assert!(!entries.contains(&"0x00000241") && !entries.contains(&"0x00000306"), "{entries:?}");
 }
+
+/// The same poll, but the volatile range comes from a watch run: the VBlank
+/// handler's decrement is an interrupt-context write, so evidence marks the
+/// counter volatile. The handler's own push/pop is a stack frame, not a global.
+#[test]
+fn live_ghidra_volatile_from_interrupt_writes() {
+    let dir = workspace();
+    let root = dir.path();
+    if call("ghidra.doctor", json!({}), root)["error"]["code"] == "ghidra_unavailable" {
+        eprintln!("skipping: Ghidra not installed");
+        return;
+    }
+    let mut b = vec![0u8; 0x400];
+    b[0..4].copy_from_slice(&0x00FF_1000u32.to_be_bytes());
+    b[4..8].copy_from_slice(&0x200u32.to_be_bytes());
+    b[0x78..0x7C].copy_from_slice(&0x250u32.to_be_bytes());
+    b[0x100..0x110].copy_from_slice(b"SEGA MEGA DRIVE ");
+    let code: &[(usize, &[u8])] = &[
+        // move.w #$8164,($C00004).l (VBlank on); move #$2000,sr; jsr $220; bra.s *
+        (0x200, &[0x33, 0xFC, 0x81, 0x64, 0, 0xC0, 0, 4, 0x46, 0xFC, 0x20, 0, 0x4E, 0xB9, 0, 0, 0x02, 0x20, 0x60, 0xFE]),
+        // move.l #5,($FFE4EE).l; loop: tst.l ($FFE4EE).l; bne.s loop; rts
+        (0x220, &[0x23, 0xFC, 0, 0, 0, 5, 0, 0xFF, 0xE4, 0xEE, 0x4A, 0xB9, 0, 0xFF, 0xE4, 0xEE, 0x66, 0xF8, 0x4E, 0x75]),
+        // move.l d0,-(sp); tst.l ($FFE4EE).l; beq.s +6; subq.l #1,($FFE4EE).l; move.l (sp)+,d0; rte
+        (0x250, &[0x2F, 0x00, 0x4A, 0xB9, 0, 0xFF, 0xE4, 0xEE, 0x67, 6, 0x53, 0xB9, 0, 0xFF, 0xE4, 0xEE, 0x20, 0x1F, 0x4E, 0x73]),
+    ];
+    for (at, bytes) in code {
+        b[*at..*at + bytes.len()].copy_from_slice(bytes);
+    }
+    fs::write(root.join("vbl.md"), b).unwrap();
+    let watch = call("watch", json!({"rom":"vbl.md","frames":10,"watch":{"address":0,"length":0x10000}}), root);
+    let records = watch["data"]["records_artifact"]["path"].as_str().unwrap().to_string();
+    let writes = watch["data"]["write_preview"].as_array().unwrap();
+    assert!(writes.iter().any(|w| w["pc"] == 0x25A && w["in_interrupt"] == true), "{writes:?}");
+    assert!(writes.iter().any(|w| w["pc"] == 0x220 && w["in_interrupt"] == false), "{writes:?}");
+
+    fs::write(root.join("vbl.sym"), "220 Delay\nFFE4EE delay_counter data 4\n").unwrap();
+    let out = call("ghidra.decompile", json!({"rom":"vbl.md","addr":"220","evidence":[records],"symbols":["vbl.sym"]}), root);
+    assert_eq!(out["ok"], true, "{out}");
+    let text = out["data"]["pseudocode"].as_str().unwrap();
+    assert!(text.contains("delay_counter = 5;") && text.contains("!= 0);") && !text.contains("while( true )"), "{text}");
+    let evidence = &out["data"]["provenance"]["evidence"];
+    let marked = evidence["volatile_from_evidence"].as_array().unwrap();
+    assert_eq!(marked.len(), 1, "{evidence}");
+    assert_eq!((marked[0]["address"].as_u64(), marked[0]["length"].as_u64(), marked[0]["writer_pc"].as_u64()), (Some(0xFF_E4EE), Some(4), Some(0x25A)));
+    assert!(evidence["interrupt_stack_writes"].as_u64().unwrap() > 0, "{evidence}");
+}

@@ -120,6 +120,10 @@ pub struct System {
     pub z80_ram_watch: Option<crate::observe::Z80RamWatch>,
     pub z80_trace: Option<crate::observe::Z80Trace>,
     wram_long_write: bool,
+    /// Active exception frames, innermost last: true for interrupts. Pushed
+    /// on entry, popped on RTE; transient, so a state loaded inside a
+    /// handler starts outside it.
+    exception_frames: Vec<bool>,
     cpu_bus_active: bool,
     z80_bus_active: bool,
     interrupt_bus_active: bool,
@@ -259,6 +263,7 @@ impl System {
             z80_ram_watch: None,
             z80_trace: None,
             wram_long_write: false,
+            exception_frames: Vec::new(),
             cpu_bus_active: false,
             z80_bus_active: false,
             interrupt_bus_active: false,
@@ -351,6 +356,7 @@ impl System {
         self.stall_carry = 0;
         self.pending_irq_ack = None;
         self.irq_acked = false;
+        self.exception_frames.clear();
         self.dma_overlaps_instruction = false;
         self.io = Io::new();
         self.io.gun = self.cart.data.get(0x150..0x180).and_then(crate::input::LightGun::detect);
@@ -601,6 +607,7 @@ impl System {
             let mut cpu = std::mem::replace(&mut self.cpu, M68000::new(0));
             cpu.interrupt(self, level);
             self.cpu = cpu;
+            self.push_exception_frame(true);
             self.cpu_bus_active = false;
             self.interrupt_bus_active = false;
             // Autovector acknowledge waits for the E-clock phase. Match the
@@ -656,6 +663,7 @@ impl System {
             (outcome.exception, cpu.last_fault.take())
         {
             cpu.address_error_entry(self, fault, ir);
+            self.push_exception_frame(false);
             // The reference charges the exception less the opcode's table
             // cost and never adds that cost back (longjmp out of the opcode).
             let base = crate::cpu::m68000::base_cycles(ir);
@@ -682,6 +690,7 @@ impl System {
             }
             let return_pc = cpu.pc;
             cpu.exception_entry(self, vector, return_pc);
+            self.push_exception_frame(false);
             instruction_cycles = outcome.cycles + cycles;
         }
         if outcome.exception.is_none() && cpu.status_written && !cpu.halted {
@@ -704,6 +713,10 @@ impl System {
                     self.refresh_deadline += 896;
                 }
             }
+        }
+        // sound_prefetch_word is this step's opcode (captured before it ran): RTE.
+        if outcome.exception.is_none() && self.sound_prefetch_word == 0x4E73 {
+            self.exception_frames.pop();
         }
         self.cpu = cpu;
         self.cpu_bus_active = false;
@@ -802,6 +815,7 @@ impl System {
     /// mode, mask 7, SP and PC reloaded from the vectors now mapped, reset
     /// exception clocks, refresh resynchronized to the frame-relative grid.
     fn pulse_cpu_reset(&mut self) {
+        self.exception_frames.clear();
         let sp = self.read32(0);
         let pc = self.read32(4);
         let mut cpu = std::mem::replace(&mut self.cpu, M68000::new(0));
@@ -961,6 +975,19 @@ impl System {
         });
     }
 
+    fn push_exception_frame(&mut self, interrupt: bool) {
+        // Handlers that never return (or reset the stack) must not grow this.
+        if self.exception_frames.len() >= 64 {
+            self.exception_frames.remove(0);
+        }
+        self.exception_frames.push(interrupt);
+    }
+
+    /// True while a 68000 interrupt handler is active (entry until its RTE).
+    pub fn in_interrupt(&self) -> bool {
+        self.exception_frames.contains(&true)
+    }
+
     fn observe_wram_write(&mut self, address: u32, value: u32, width_bits: u8) {
         if self.wram_long_write {
             return;
@@ -972,6 +999,7 @@ impl System {
         } else {
             None
         };
+        let in_interrupt = self.cpu_bus_active && self.in_interrupt();
         let Some(watch) = self
             .wram_watch
             .as_mut()
@@ -1009,6 +1037,7 @@ impl System {
             d: self.cpu_bus_active.then_some(self.stamp_full_registers.0),
             a: self.cpu_bus_active.then_some(self.stamp_full_registers.1),
             sr: self.cpu_bus_active.then_some(self.stamp_full_registers.2),
+            in_interrupt,
         });
     }
 }

@@ -36,12 +36,19 @@ with exactly the same JSON arguments as MCP.
 | `render` | `render` | Render verified captured VDP buffers |
 | `graphics` | `graphics` | Tile indices, palette sheets, planes and sprite layout |
 | `image.compare` | `image_compare` | Pixel diff of two PNGs: changed counts, regions, bounds, diff PNG |
-| `trace` | `trace` | Pre-instruction register-state JSONL |
+| `trace` | `trace` | Pre-instruction register-state JSONL; `coverage: true` adds whole-run distinct PCs/transfers/A-register frequencies |
 | `watch` | `watch` | Folded WRAM bus-write JSONL, all widths and same-value writes |
 | `survey` | `survey` | Batch named operations with per-item results |
 | `cpu.conformance` | `cpu_conformance` | Bounded independent instruction fixtures |
 | `schema` | `schema` | Discover the complete operation contracts |
-| `guide` | `guide` | Built-in workflow guidance: `overview`, `port` |
+| `guide` | `guide` | Built-in workflow guidance: `overview`, `port`, `ghidra` |
+| `ghidra.doctor` | `ghidra_doctor` | Check the optional Ghidra install and Java |
+| `ghidra.analyze` | `ghidra_analyze` | Cached Ghidra analysis (68000 or Z80 driver) with MD memory map, vectors, banks, state RAM and runtime evidence |
+| `ghidra.functions` | `ghidra_functions` | Functions with names, signatures and body ranges, paged |
+| `ghidra.decompile` | `ghidra_decompile` | Pseudocode (a hypothesis), listing and callers/callees of the function containing an address |
+| `ghidra.xrefs` | `ghidra_xrefs` | References to/from an address, with WRAM aliases folded |
+| `ghidra.annotate` | `ghidra_annotate` | Rename/comment functions as a new analysis revision |
+| `ghidra.export_symbols` | `ghidra_export_symbols` | Byte-bound `.symbols.json` names for later analyses |
 | `template.create` | `template_create` | Create a native Rust/Bevy port workspace (engine + game) |
 | `template.update` | `template_update` | Update a created workspace's template-owned files |
 

@@ -441,6 +441,58 @@ fn probes_preserve_instruction_boundary_state_and_report_every_record_cap() {
 }
 
 #[test]
+fn trace_coverage_counts_every_distinct_pc_and_transfer_of_the_whole_run() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("loop.md");
+    // lea $312,a5; loop: jsr $220; bra.s loop ... $220: rts
+    let mut program = vec![0x4B, 0xF9, 0, 0, 0x03, 0x12, 0x4E, 0xB9, 0, 0, 0x02, 0x20, 0x60, 0xF8];
+    program.resize(0x20, 0);
+    program.extend([0x4E, 0x75]);
+    rom(&path, &program);
+    let context = context(root.path());
+    let trace = call(
+        "trace",
+        json!({"rom":path,"instructions":1000,"max_records":0,"coverage":true}),
+        &context,
+    );
+    // max_records 0 with coverage declines per-step records without truncation.
+    assert_eq!(trace["exit"], "ok", "{trace}");
+    assert_eq!(trace["data"]["retained_records"], 0);
+    let summary = &trace["data"]["coverage"];
+    assert_eq!(summary["steps"], 1000);
+    assert_eq!(summary["distinct_pcs"], 4);
+    assert_eq!(summary["distinct_edges"], 3);
+    assert_eq!(summary["hottest"][0]["hits"], 333);
+    let artifact = serde_json::from_value(summary["coverage_artifact"].clone()).unwrap();
+    let rows: Vec<Value> = String::from_utf8(artifacts::verified(&artifact).unwrap())
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let pcs: Vec<&Value> = rows.iter().filter(|r| r["kind"] == "pc").collect();
+    assert_eq!(pcs.iter().map(|r| r["pc"].as_u64().unwrap()).collect::<Vec<_>>(), [0x200, 0x206, 0x20C, 0x220]);
+    assert_eq!(pcs.iter().map(|r| r["hits"].as_u64().unwrap()).sum::<u64>(), 1000);
+    assert_eq!((pcs[0]["first_step"].as_u64(), pcs[0]["hits"].as_u64()), (Some(0), Some(1)));
+    let edges: Vec<(u64, u64)> = rows
+        .iter()
+        .filter(|r| r["kind"] == "edge")
+        .map(|r| (r["pc"].as_u64().unwrap(), r["next_pc"].as_u64().unwrap()))
+        .collect();
+    assert_eq!(edges, [(0x206, 0x220), (0x20C, 0x206), (0x220, 0x20C)]);
+    let registers = rows.last().unwrap();
+    assert_eq!(registers["kind"], "registers");
+    assert_eq!(registers["a"][5][0], json!([0x312, 999]));
+    // The artifact survives into the call's store like other trace outputs.
+    assert!(context.store.join("objects").join(summary["coverage_artifact"]["sha256"].as_str().unwrap()).is_file());
+    let watch = call(
+        "watch",
+        json!({"rom":path,"instructions":8,"coverage":true,"watch":{"address":0xE54A,"length":2}}),
+        &context,
+    );
+    assert_eq!(watch["error"]["code"], "invalid_arguments");
+}
+
+#[test]
 fn survey_reports_each_failure_and_malformed_conformance_is_not_a_pass() {
     let root = tempfile::tempdir().unwrap();
     let context = context(root.path());

@@ -19,7 +19,10 @@ A typical investigation:
 4. Find the data: graphics exports patterns, palettes, name tables and
    sprites from a snapshot; render redraws it; audio and the VGM/stem exports
    capture sound.
-5. Compare: image_compare diffs two PNGs (an mdx screenshot and a port's).
+5. Optional, with Ghidra installed: ghidra_decompile and ghidra_xrefs give
+   function extents, callers and pseudocode for a PC you found in step 3;
+   pass trace records as evidence to resolve jump tables (guide topic ghidra).
+6. Compare: image_compare diffs two PNGs (an mdx screenshot and a port's).
 
 Results are evidence about the runs you made, not proofs about the whole
 game. Write down which run supports which conclusion.

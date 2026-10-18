@@ -44,13 +44,16 @@ Default tests use authored synthetic cartridges, frozen oracle observations
 The release build of the whole workspace is slow-ish; when iterating on mdcore,
 `cargo build --release -q` then use the examples in `crates/mdcore/examples/`.
 
-## Operations (22)
+## Operations (29)
 
 `template.create`, `template.update`, `guide`, `artifact.import`,
 `artifact.read`, `artifact.view`, `memory.read`, `memory.search`,
 `image.compare`, `memory.diff`, `survey`, `trace`, `watch`, `header`,
 `disasm`, `audio`, `boot`, `ram.dump`, `cpu.conformance`, `render`,
-`graphics`, `schema`.
+`graphics`, `schema`, and the optional Ghidra group `ghidra.doctor`,
+`ghidra.analyze`, `ghidra.functions`, `ghidra.decompile`, `ghidra.xrefs`,
+`ghidra.annotate`, `ghidra.export_symbols` (CLI `mdx ghidra <action>`; needs a
+local Ghidra 12 via `MDX_GHIDRA_HOME`, see `mdx guide ghidra`).
 
 - Discover contracts: `mdx schema` (paginated) / `mdx schema boot`.
 - Invoke anything: `mdx call boot --args '{"rom":"/abs/game.md","frames":60}'`.

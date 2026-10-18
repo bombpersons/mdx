@@ -213,6 +213,114 @@ public class MdxGhidra extends HeadlessScript {
         }
         return written;
     }
+    /**
+     * `jsr d16(An)` / `jmp d16(An)` with An fixed by register context: Ghidra's
+     * 68000 semantics load a pointer from An+d16 and call through it, so a
+     * table of `jmp abs.l` stubs reads as calls to 0x4EF9xxxx. Resolve each
+     * site to An+d16, make a `jmp abs.l` stub there a thunk of its target, and
+     * override the call so pseudocode names the routine. Odd or non-code
+     * targets are reported, never turned into functions.
+     */
+    private JsonObject baseRegisterCalls() throws Exception {
+        var out = new JsonObject();
+        int resolved = 0, thunks = 0;
+        var rejected = new JsonArray();
+        var executable = currentProgram.getMemory().getExecuteSet();
+        var context = currentProgram.getProgramContext();
+        var refs = currentProgram.getReferenceManager();
+        var sites = new ArrayList<Instruction>();
+        for (var it = currentProgram.getListing().getInstructions(true); it.hasNext();) {
+            var ins = it.next();
+            var m = ins.getMnemonicString().toLowerCase();
+            if ((m.equals("jsr") || m.equals("jmp")) && ins.getFlowType().isComputed()) sites.add(ins);
+        }
+        for (var ins : sites) {
+            monitor.checkCancelled();
+            ghidra.program.model.lang.Register base = null;
+            long disp = 0;
+            boolean simple = true;
+            for (var o : ins.getOpObjects(0)) {
+                if (o instanceof ghidra.program.model.lang.Register r && base == null) base = r;
+                else if (o instanceof ghidra.program.model.scalar.Scalar sc) disp = sc.getSignedValue();
+                else simple = false;
+            }
+            // Only (An) and (d16,An); indexed forms vary at run time.
+            if (!simple || base == null || !base.getName().matches("(?i)A[0-6]")) continue;
+            var value = context.getRegisterValue(base, ins.getAddress());
+            if (value == null || !value.hasValue()) continue;
+            var target = toAddr((value.getUnsignedValue().longValue() + disp) & 0xFFFFFFL);
+            boolean call = ins.getFlowType().isCall();
+            String why = null;
+            // A stub with a bad target still names the stub: that is what the CPU calls.
+            boolean overrideAnyway = false;
+            Address callee = target;
+            if ((target.getOffset() & 1) != 0 || !executable.contains(target)) {
+                why = "target is odd or outside code";
+            } else {
+                var stubTarget = jmpAbsLong(target);
+                if (stubTarget != null) {
+                    if ((stubTarget.getOffset() & 1) != 0 || !executable.contains(stubTarget)) {
+                        why = "jmp stub at " + hex(target) + " leads to odd or non-code " + hex(stubTarget);
+                        overrideAnyway = true;
+                    }
+                    else if (makeThunk(target, stubTarget)) thunks++;
+                } else if (call) {
+                    new DisassembleCommand(target, executable, true).applyTo(currentProgram, monitor);
+                    if (getFunctionAt(target) == null && createFunction(target, null) == null) why = "no function could be created at " + hex(target);
+                }
+            }
+            if (why != null) {
+                if (rejected.size() < 256) {
+                    var r = new JsonObject();
+                    r.addProperty("from", hex(ins.getAddress()));
+                    r.addProperty("target", hex(target));
+                    r.addProperty("reason", why);
+                    rejected.add(r);
+                }
+                if (!overrideAnyway) continue;
+            }
+            var type = call ? RefType.CALL_OVERRIDE_UNCONDITIONAL : RefType.JUMP_OVERRIDE_UNCONDITIONAL;
+            for (var r : ins.getOperandReferences(0)) refs.delete(r);
+            var ref = refs.addMemoryReference(ins.getAddress(), callee, type, SourceType.USER_DEFINED, 0);
+            refs.setPrimary(ref, true);
+            if (why == null) resolved++;
+        }
+        out.addProperty("resolved", resolved);
+        out.addProperty("thunks_created", thunks);
+        out.add("rejected", rejected);
+        return out;
+    }
+    /** Target of a `jmp abs.l` (4EF9 xxxxxxxx) at a, or null. */
+    private Address jmpAbsLong(Address a) {
+        try {
+            var mem = currentProgram.getMemory();
+            if ((mem.getShort(a) & 0xFFFF) != 0x4EF9) return null;
+            return toAddr(mem.getInt(a.add(2)) & 0xFFFFFFL);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+    /** Makes the stub at `stub` a thunk of the function at `target`; true if newly made. */
+    private boolean makeThunk(Address stub, Address target) throws Exception {
+        var existing = getFunctionAt(stub);
+        if (existing != null && existing.isThunk()) return false;
+        var code = currentProgram.getMemory().getExecuteSet();
+        if (getInstructionAt(stub) == null) {
+            clearListing(stub, stub.add(5));
+            new DisassembleCommand(stub, code, false).applyTo(currentProgram, monitor);
+        }
+        new DisassembleCommand(target, code, true).applyTo(currentProgram, monitor);
+        var callee = getFunctionAt(target);
+        if (callee == null) callee = createFunction(target, null);
+        if (callee == null) throw new IOException("no function at thunk target " + hex(target));
+        if (existing != null) {
+            existing.setThunkedFunction(callee);
+        } else {
+            var cmd = new ghidra.app.cmd.function.CreateThunkFunctionCmd(stub, new AddressSet(stub, stub.add(5)), target);
+            if (!cmd.applyTo(currentProgram, monitor)) throw new IOException("thunk at " + hex(stub) + ": " + cmd.getStatusMsg());
+        }
+        return true;
+    }
     /** Snapshot RAM is not a string table: drop data analysis invented there. */
     private int clearSnapshotData() throws Exception {
         int cleared = 0;
@@ -231,6 +339,7 @@ public class MdxGhidra extends HeadlessScript {
         index.addProperty("snapshot_data_cleared", clearSnapshotData());
         index.addProperty("analysis_timed_out", analysisTimeoutOccurred());
         index.addProperty("jump_table_overrides", jumpTables());
+        index.add("base_register_calls", baseRegisterCalls());
         var functions = new JsonArray();
         for (var f : currentProgram.getFunctionManager().getFunctions(true)) {
             monitor.checkCancelled();

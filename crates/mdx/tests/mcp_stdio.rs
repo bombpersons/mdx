@@ -158,20 +158,24 @@ fn template_creation_uses_the_explicit_client_workspace_not_server_cwd() {
     );
     assert!(result["ok"].as_bool().unwrap(), "{result}");
     assert_eq!(result["data"]["directory"], directory.to_str().unwrap());
-    assert!(directory.join("src/dev_mcp.rs").is_file());
+    assert!(directory.join("md-bevy/src/dev_mcp.rs").is_file());
+    assert!(directory.join(".mdx-template.toml").is_file());
     assert!(!server_root.path().join("native-game").exists());
-    let manifest = fs::read_to_string(directory.join("Cargo.toml")).unwrap();
+    let manifest = fs::read_to_string(directory.join("game/Cargo.toml")).unwrap();
     assert!(manifest.contains("name = \"client-native\""));
-    assert!(manifest.contains("version = \"=0.20.0\""));
+    assert!(fs::read_to_string(directory.join("Cargo.toml")).unwrap().contains("version = \"=0.20.0\""));
     let collision = rpc.tool(
         "template_create",
         json!({"directory":directory,"name":"other"}),
     );
     assert_eq!(collision["error"]["code"], "template_collision");
     assert_eq!(
-        fs::read_to_string(directory.join("Cargo.toml")).unwrap(),
+        fs::read_to_string(directory.join("game/Cargo.toml")).unwrap(),
         manifest
     );
+    let update = rpc.tool("template_update", json!({"directory":directory,"dry_run":true}));
+    assert!(update["ok"].as_bool().unwrap(), "{update}");
+    assert_eq!(update["data"]["updated"], json!([]));
     rpc.close();
 }
 

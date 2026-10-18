@@ -1,9 +1,9 @@
 //! Edit bindings here; game logic only consumes Mega Drive buttons.
 use bevy::prelude::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "dev-mcp", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "dev-mcp", serde(rename_all = "lowercase"))]
+/// The names (`up`, `a`, `start`...) are the ones mdx's controller replays use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Button {
     Up,
     Down,
@@ -51,7 +51,6 @@ impl ControllerState {
     pub fn released(&self, button: Button) -> bool {
         (!self.held & self.previous) & button.mask() != 0
     }
-    #[cfg(feature = "dev-mcp")]
     pub fn buttons(&self) -> Vec<Button> {
         Button::ALL.into_iter().filter(|b| self.held(*b)).collect()
     }

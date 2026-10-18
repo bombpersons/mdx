@@ -41,8 +41,10 @@ emulate.
 - **Record audio** as WAV, VGM, or separate stems per FM/PSG voice.
 - **Save and resume** the whole machine at any point.
 - **Compare images**, for example a remake against the original.
-- **Spin up a native game template** (Rust + Bevy) with a Mega Drive-sized
-  screen, for when you start rebuilding a game for real.
+- **Start a native port** (Rust + Bevy): a workspace that keeps a reusable
+  engine apart from the game, draws with Mega Drive palettes, tiles and
+  priorities, and tests the port against per-frame recordings of the
+  original (`mdx guide port`).
 
 You can use all of this from the command line, or plug mdx into an AI coding
 agent as an MCP server.
@@ -74,6 +76,8 @@ No game ROMs are included, and none are needed to build mdx or run its tests.
 - [README_FOR_AGENTS.md](README_FOR_AGENTS.md): the detailed tour, covering
   architecture, how accuracy is checked, the tooling and the house rules.
 - [docs/mdx.md](docs/mdx.md): the full command/API handbook.
+- [docs/port-prompt.md](docs/port-prompt.md): a starting prompt for an agent
+  porting a game.
 - [docs/save-states.md](docs/save-states.md) and
   [docs/audio-development.md](docs/audio-development.md).
 

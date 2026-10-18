@@ -1,0 +1,7 @@
+// The demo player's design numbers.
+(
+    speed: 2,          // pixels per tick
+    size: (12, 16),    // pixels
+    min: (0, 0),
+    max: (320, 224),
+)

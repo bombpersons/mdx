@@ -694,7 +694,7 @@ fn main() {
             let Some(addr) = parse_u32(&from) else {
                 std::process::exit(usage_failure(
                     "mdx.disasm",
-                    format!("invalid address {from:?}"),
+                    format!("invalid address {from:?}: expected hex, e.g. 1339E or 0x1339E"),
                 ));
             };
             let origin = match origin.as_deref().map(parse_u32) {
@@ -739,15 +739,13 @@ fn run_json_operation(name: &str, args: &str, context: &Context) -> i32 {
     }
 }
 
-/// Parse `0x...` or decimal. Hex is the natural spelling for a 68000 tool but
-/// decimal shows up in shell arithmetic, so accept both rather than guess.
+/// Parse hex, `0x` optional. Every other address argument (boot stop
+/// points, watch specs, Ghidra addrs) reads bare digits as hex, so a bare
+/// `312` here must mean 0x312 too, not 0x138.
 fn parse_u32(s: &str) -> Option<u32> {
     let t = s.trim();
-    if let Some(h) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
-        u32::from_str_radix(h, 16).ok()
-    } else {
-        t.parse().ok()
-    }
+    let h = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")).unwrap_or(t);
+    u32::from_str_radix(h, 16).ok()
 }
 
 fn parse_addr_len(s: &str) -> Option<(u32, u32)> {
@@ -767,8 +765,8 @@ fn run_ram_dump(
 ) -> i32 {
     let bad = |what: &str| Failure {
         code: "bad_argument".into(),
-        message: format!("{what} is not a number: expected hex (0x1234) or decimal"),
-        remediation: Some("use 0x-prefixed hex for 68000 addresses and values".into()),
+        message: format!("{what} is not hexadecimal: expected 1234 or 0x1234"),
+        remediation: Some("addresses and values are hex; the 0x prefix is optional".into()),
     };
     let find = match find.as_deref() {
         Some(s) => match parse_u32(s) {

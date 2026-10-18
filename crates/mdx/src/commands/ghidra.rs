@@ -31,6 +31,8 @@ const FORMAT: u32 = 1;
 const FILE_LIMIT: u64 = 64 * 1024 * 1024;
 const MAX_EXECUTED: usize = 262_144;
 const MAX_FLOWS: usize = 65_536;
+/// Distinct addresses written in interrupt context that evidence may mark volatile.
+const MAX_INTERRUPT_WRITES: usize = 1024;
 const LISTING_LIMIT: usize = 2048;
 const WRAM: u32 = 0xFF_0000;
 type Result<T> = std::result::Result<T, Failure>;
@@ -174,6 +176,20 @@ macro_rules! with_input {
             #[arg(long = "register")]
             #[serde(default)]
             pub registers: Vec<String>,
+            /// Hex RAM addresses ADDR or ADDR:LEN (LEN hex, default 1) that interrupt
+            /// handlers or hardware change, e.g. FFE4EE:4 for a counter the VBlank
+            /// handler decrements. The decompiler then keeps every read of them instead
+            /// of folding a polling loop into an infinite one. Watch evidence adds the
+            /// addresses that interrupt handlers write.
+            #[arg(long = "volatile")]
+            #[serde(default)]
+            pub volatile: Vec<String>,
+            /// m68000: name functions from MacsBug symbols that Mac C compilers put
+            /// after each routine's rts (length byte 0x80|n, then the name).
+            /// Without it, an analysis that finds such names suggests it.
+            #[arg(long)]
+            #[serde(default)]
+            pub macsbug: bool,
             /// z80: ROM file offset (hex) of the driver bytes to analyse.
             #[arg(long)]
             #[serde(default)]
@@ -187,7 +203,7 @@ macro_rules! with_input {
             #[serde(default)]
             pub z80_size: Option<u32>,
             /// Name seeds: .symbols.json from ghidra_export_symbols (bytes verified) or
-            /// plain "ADDR NAME" lines (unverified).
+            /// plain "ADDR NAME [function|data [SIZE]]" lines (unverified).
             #[arg(long)]
             #[serde(default)]
             pub symbols: Vec<String>,
@@ -218,6 +234,8 @@ macro_rules! with_input {
                     entries: self.entries.clone(),
                     banks: self.banks.clone(),
                     registers: self.registers.clone(),
+                    volatile: self.volatile.clone(),
+                    macsbug: self.macsbug,
                     z80_rom_offset: self.z80_rom_offset.clone(),
                     z80_origin: self.z80_origin.clone(),
                     z80_size: self.z80_size,
@@ -242,6 +260,8 @@ struct Input {
     entries: Vec<String>,
     banks: Vec<String>,
     registers: Vec<String>,
+    volatile: Vec<String>,
+    macsbug: bool,
     z80_rom_offset: Option<String>,
     z80_origin: Option<String>,
     z80_size: Option<u32>,
@@ -265,8 +285,34 @@ with_input!(
         #[serde(default = "function_timeout")]
         #[schemars(range(min = 1, max = 300))]
         pub decompile_timeout: u32,
+        /// Keep only the function, pseudocode, callers/callees and analysis
+        /// identity: drops the instruction listing, mapping and provenance, so
+        /// large functions stay inline instead of spilling to result_artifact.
+        #[arg(long)]
+        #[serde(default)]
+        pub brief: bool,
     }
 );
+with_input!(
+    pub struct DecompileBatchArgs {
+        /// Hex addresses, one per function (1..=200), decompiled in one Ghidra run.
+        #[arg(long = "addr", required = true)]
+        pub addrs: Vec<String>,
+        /// Per-function decompiler budget in seconds (1..=300).
+        #[arg(long, default_value_t = function_timeout())]
+        #[serde(default = "function_timeout")]
+        #[schemars(range(min = 1, max = 300))]
+        pub decompile_timeout: u32,
+        /// Drop listings, mapping and provenance (default true for batches).
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        #[serde(default = "yes")]
+        pub brief: bool,
+    }
+);
+const MAX_BATCH: usize = 200;
+fn yes() -> bool {
+    true
+}
 with_input!(
     pub struct FunctionsArgs {
         /// Case-insensitive substring of the name; unnamed functions are FUN_<address>.
@@ -314,7 +360,8 @@ pub struct AnnotateArgs {
     /// Analysis manifest path.
     #[arg(long)]
     pub analysis: String,
-    /// JSON file {"functions":[{"addr":"1A2C","name":"UpdatePlayer","comment":"evidence..."}]}.
+    /// JSON file {"functions":[{"addr":"1A2C","name":"UpdatePlayer","comment":"evidence..."}],
+    /// "labels":[{"addr":"FFE800","name":"player_x"}]}.
     #[arg(long)]
     #[serde(default)]
     pub file: Option<PathBuf>,
@@ -322,6 +369,10 @@ pub struct AnnotateArgs {
     #[arg(skip)]
     #[serde(default)]
     pub functions: Vec<FunctionPatch>,
+    /// Data names inline: RAM globals, ROM tables, any mapped address.
+    #[arg(skip)]
+    #[serde(default)]
+    pub labels: Vec<LabelPatch>,
     #[arg(long)]
     #[serde(default)]
     pub ghidra_home: Option<PathBuf>,
@@ -351,7 +402,22 @@ pub struct ExportArgs {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Patch {
+    #[serde(default)]
     pub functions: Vec<FunctionPatch>,
+    #[serde(default)]
+    pub labels: Vec<LabelPatch>,
+}
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LabelPatch {
+    /// Hex address of the data (work RAM, ROM table, SRAM, ...).
+    pub addr: String,
+    pub name: String,
+    /// Bytes the global spans (1, 2 or 4): defines byte/word/dword data there,
+    /// so a long access reads `name`, not `_name`.
+    pub size: Option<u32>,
+    /// End-of-line comment at the address.
+    pub comment: Option<String>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -373,6 +439,8 @@ pub enum Action {
     Functions(FunctionsArgs),
     /// Pseudocode, listing and callers/callees of the function containing an address.
     Decompile(DecompileArgs),
+    /// Decompile several functions in one Ghidra run, as one result.
+    DecompileBatch(DecompileBatchArgs),
     /// References to and from an address (code or data).
     Xrefs(XrefsArgs),
     /// Apply function renames and comments as a new analysis revision.
@@ -389,6 +457,7 @@ impl Action {
             Self::Analyze(a) => ("ghidra.analyze", v(&a)),
             Self::Functions(a) => ("ghidra.functions", v(&a)),
             Self::Decompile(a) => ("ghidra.decompile", v(&a)),
+            Self::DecompileBatch(a) => ("ghidra.decompile_batch", v(&a)),
             Self::Xrefs(a) => ("ghidra.xrefs", v(&a)),
             Self::Annotate(a) => ("ghidra.annotate", v(&a)),
             Self::ExportSymbols(a) => ("ghidra.export_symbols", v(&a)),
@@ -720,6 +789,9 @@ pub struct Mapping {
     entries: Vec<u32>,
     /// Register context applied over all code.
     registers: BTreeMap<String, u32>,
+    /// Folded [start, end) ranges marked volatile by request or evidence.
+    #[serde(default)]
+    volatile: Vec<(u32, u32)>,
     blocks: Vec<Block>,
 }
 
@@ -734,11 +806,48 @@ struct Evidence {
     #[serde(skip)]
     address_registers: Vec<BTreeMap<u32, u64>>,
     traced: u64,
+    /// Folded address -> (bytes, first writer PC, writes) for 68000 watch
+    /// writes made inside an interrupt handler.
+    #[serde(default)]
+    interrupt_writes: BTreeMap<u32, (u32, u32, u64)>,
+    /// Interrupt-context writes near the stack pointer, taken as handler frames.
+    #[serde(default)]
+    interrupt_stack_writes: u64,
 }
 impl Evidence {
     fn summary(&self) -> Value {
         json!({"sources":self.sources,"executed_pcs":self.executed.len(),"flows":self.flows.len(),"ignored_pcs":self.ignored_pcs,
-            "truncated":self.truncated,"register_hints":self.register_hints()})
+            "truncated":self.truncated,"register_hints":self.register_hints(),
+            "volatile_from_evidence":self.interrupt_writes.iter().map(|(a,(len,pc,n))| json!({"address":a,"length":len,"writer_pc":pc,"writes":n,
+                "why":"written inside an interrupt handler"})).collect::<Vec<_>>(),
+            "interrupt_stack_writes":self.interrupt_stack_writes})
+    }
+    /// [start, end) ranges written from interrupt context.
+    fn volatile_ranges(&self) -> Vec<(u32, u32)> {
+        self.interrupt_writes.iter().map(|(&a, &(len, _, _))| (a, a + len)).collect()
+    }
+    fn interrupt_write(&mut self, r: &Value) {
+        let (Some(address), Some(bits)) = (number(&r["address"]), r["width_bits"].as_u64()) else { return };
+        let address = Cpu::M68000.fold(address);
+        // Pushes and locals sit just below/above the handler's stack pointer.
+        if let Some(sp) = number(&r["a"][7]).map(|sp| Cpu::M68000.fold(sp)) {
+            if address + 64 >= sp && address < sp + 256 {
+                self.interrupt_stack_writes += 1;
+                return;
+            }
+        }
+        let len = (bits as u32 / 8).clamp(1, 4).min(0x100_0000 - address);
+        let full = self.interrupt_writes.len() >= MAX_INTERRUPT_WRITES;
+        match self.interrupt_writes.get_mut(&address) {
+            Some(w) => {
+                w.0 = w.0.max(len);
+                w.2 += 1;
+            }
+            None if full => self.truncated = true,
+            None => {
+                self.interrupt_writes.insert(address, (len, number(&r["pc"]).unwrap_or(0), 1));
+            }
+        }
     }
     /// Address registers holding one value in at least 90% of traced steps: a
     /// candidate base register (compiled code's A5/A4 world) to pass as register context.
@@ -928,6 +1037,9 @@ fn evidence(input: &Input, ctx: &Context) -> Result<Evidence> {
                         continue;
                     }
                     add(&mut ev, pc, None);
+                    if r["in_interrupt"] == true && r["writer"] == "m68000" {
+                        ev.interrupt_write(&r);
+                    }
                 } else {
                     kind = "trace";
                     if cpu != Cpu::M68000 {
@@ -1090,6 +1202,7 @@ fn import(input: &Input, ctx: &Context) -> Result<Import> {
                 code_ranges: code,
                 entries: vec![],
                 registers: BTreeMap::new(),
+                volatile: vec![],
                 blocks,
             };
             (image, mapping)
@@ -1271,6 +1384,7 @@ fn import(input: &Input, ctx: &Context) -> Result<Import> {
                 code_ranges: code,
                 entries: vec![],
                 registers: BTreeMap::new(),
+                volatile: vec![],
                 blocks,
             };
             (image, mapping)
@@ -1291,6 +1405,7 @@ fn import(input: &Input, ctx: &Context) -> Result<Import> {
         }
         mapping.registers.insert(name, hex(value)?);
     }
+    mark_volatile(&mut mapping, &input.volatile, &ev.volatile_ranges())?;
     provenance["evidence"] = ev.summary();
     Ok(Import {
         subject,
@@ -1305,6 +1420,129 @@ fn import(input: &Input, ctx: &Context) -> Result<Import> {
         provenance,
         warnings,
     })
+}
+
+/// MacsBug procedure names: after a routine's `rts`, `rtd #n`, `rte` or
+/// `jmp (a0)`, a byte 0x80|n, n name bytes, padding to even and a word giving
+/// the size of literal data that follows. The routine starts at the first
+/// `link a6` after the previous routine's tail, else right at that tail.
+/// Returns (start, end of the return instruction, name).
+fn macsbug_names(rom: &[u8]) -> Vec<(u32, u32, String)> {
+    let word = |i: usize| rom.get(i..i + 2).map(|b| u16::from_be_bytes([b[0], b[1]]));
+    let mut out = Vec::new();
+    let mut prev_end = 0usize;
+    let mut i = 0usize;
+    while i + 4 <= rom.len() {
+        let ret = match word(i) {
+            Some(0x4E75 | 0x4E73 | 0x4ED0) => 2,
+            Some(0x4E74) => 4,
+            _ => {
+                i += 2;
+                continue;
+            }
+        };
+        let end = i + ret;
+        let len = match rom.get(end) {
+            Some(&b) if (0x81..=0x9F).contains(&b) => (b & 0x7F) as usize,
+            _ => {
+                i += 2;
+                continue;
+            }
+        };
+        let Some(raw) = rom.get(end + 1..end + 1 + len) else { break };
+        // Mac names use % (e.g. %I_MUL4), which identifiers here do not.
+        let name: String = raw.iter().map(|&b| if b == b'%' { '_' } else { b as char }).collect();
+        if !raw.iter().all(|&b| b.is_ascii_alphanumeric() || b == b'_' || b == b'%' || b == b'.') || !valid_name(&name) {
+            i += 2;
+            continue;
+        }
+        let mut tail = end + 1 + len;
+        tail += tail & 1;
+        let literals = word(tail).unwrap_or(0) as usize;
+        let from = prev_end + (prev_end & 1);
+        let start = (from..end).step_by(2).find(|&k| word(k) == Some(0x4E56)).unwrap_or(from);
+        out.push((start as u32, end as u32, name));
+        prev_end = tail + 2 + literals;
+        i = prev_end.max(end + 2);
+        i += i & 1;
+    }
+    out
+}
+
+/// Ghidra's decompiler treats memory as volatile per block, so split each
+/// block (and every alias block mapped onto it) at the requested ranges and
+/// mark the middle pieces volatile. Evidence ranges outside every block are dropped.
+fn mark_volatile(mapping: &mut Mapping, specs: &[String], from_evidence: &[(u32, u32)]) -> Result<()> {
+    let cpu = mapping.cpu;
+    let mut ranges = Vec::new();
+    for spec in specs {
+        let (a, len) = match spec.split_once(':') {
+            Some((a, l)) => (a, hex(l)?),
+            None => (spec.as_str(), 1),
+        };
+        let start = cpu.fold(hex(a)?);
+        if !(1..=0x1_0000).contains(&len) {
+            return Err(invalid(format!("volatile {spec:?}: length must be 1..=0x10000")));
+        }
+        // Each byte must be RAM or hardware that some block models.
+        let target = |b: &Block| cpu.fold(b.mapped_to.unwrap_or(b.start));
+        let inside = mapping.blocks.iter().any(|b| target(b) <= start && start as u64 + len as u64 <= target(b) as u64 + b.size as u64);
+        if !inside {
+            return Err(invalid(format!("volatile {spec:?} is not inside one RAM or hardware block (ROM is never volatile)")));
+        }
+        ranges.push((start, start + len));
+    }
+    let requested = merge(ranges.clone());
+    for &(lo, hi) in from_evidence {
+        let (lo, hi) = (cpu.fold(lo), cpu.fold(lo) + (hi - lo));
+        let target = |b: &Block| cpu.fold(b.mapped_to.unwrap_or(b.start));
+        if mapping.blocks.iter().any(|b| target(b) <= lo && hi as u64 <= target(b) as u64 + b.size as u64) {
+            ranges.push((lo, hi));
+        }
+    }
+    let ranges = merge(ranges);
+    if ranges.is_empty() {
+        return Ok(());
+    }
+    let mut blocks = Vec::new();
+    for b in std::mem::take(&mut mapping.blocks) {
+        let base = cpu.fold(b.mapped_to.unwrap_or(b.start));
+        // Cut points as offsets into this block.
+        let mut cuts = vec![0, b.size];
+        for &(lo, hi) in &ranges {
+            for edge in [lo, hi] {
+                if edge > base && edge - base < b.size {
+                    cuts.push(edge - base);
+                }
+            }
+        }
+        cuts.sort_unstable();
+        cuts.dedup();
+        if b.is_volatile {
+            blocks.push(b);
+            continue;
+        }
+        for (i, w) in cuts.windows(2).enumerate() {
+            let (off, size) = (w[0], w[1] - w[0]);
+            let mut piece = b.clone();
+            piece.start = b.start + off;
+            piece.size = size;
+            piece.mapped_to = b.mapped_to.map(|m| m + off);
+            piece.bytes = b.bytes.as_ref().map(|bytes| bytes[off as usize..(off + size) as usize].to_vec());
+            piece.is_volatile = contains(&ranges, base + off);
+            if i > 0 {
+                piece.name = format!("{}_{:X}", b.name, piece.start);
+                piece.comment = None;
+            }
+            if piece.is_volatile && !b.is_volatile {
+                piece.comment = Some(if contains(&requested, base + off) { "volatile by request" } else { "volatile: written by an interrupt handler" }.into());
+            }
+            blocks.push(piece);
+        }
+    }
+    mapping.blocks = blocks;
+    mapping.volatile = ranges;
+    Ok(())
 }
 
 /// Bytes at `addr..addr+len` of the analysed memory (image or a block with bytes).
@@ -1354,6 +1592,20 @@ fn valid_name(name: &str) -> bool {
 
 /// Name seeds: body-verified `.symbols.json`, or plain "ADDR NAME" lines.
 fn seed_symbols(input: &Input, imp: &mut Import, ctx: &Context) -> Result<()> {
+    // First, so explicit symbols below override a MacsBug name.
+    if input.cpu == Cpu::M68000 {
+        let found = macsbug_names(&imp.payload);
+        if input.macsbug {
+            for (start, _, name) in &found {
+                if contains(&imp.mapping.code_ranges, *start) {
+                    imp.symbols.push(json!({"address":start,"name":name,"kind":"function","source":"imported"}));
+                }
+            }
+            imp.provenance["macsbug_names"] = json!(found.len());
+        } else if found.len() >= 8 {
+            imp.warnings.push(format!("{} MacsBug routine names found after rts instructions (a Mac C toolchain left them in); pass macsbug: true to name functions from them", found.len()));
+        }
+    }
     for source in &input.symbols {
         let path = artifacts::resolve(&ctx.store, source)?;
         let text = String::from_utf8(artifacts::read_bounded(&path, FILE_LIMIT)?).map_err(|_| invalid(format!("{source}: not UTF-8")))?;
@@ -1386,13 +1638,36 @@ fn seed_symbols(input: &Input, imp: &mut Import, ctx: &Context) -> Result<()> {
             if line.is_empty() || line.starts_with(['#', ';']) {
                 continue;
             }
+            // ADDR NAME [function|data [SIZE]]; without a kind, code addresses are functions.
             let mut words = line.split_whitespace();
             if let (Some(a), Some(name)) = (words.next(), words.next()) {
                 let a = input.cpu.fold(hex(a)?);
-                if !valid_name(name) || !contains(&imp.mapping.code_ranges, a) {
-                    return Err(invalid(format!("{source}: symbol {name:?} at {a:#X} is outside the analysed code or not an identifier")));
+                if !valid_name(name) {
+                    return Err(invalid(format!("{source}: symbol {name:?} is not an identifier")));
                 }
-                imp.symbols.push(json!({"address":a,"name":name,"kind":"function"}));
+                let in_code = contains(&imp.mapping.code_ranges, a);
+                let function = match words.next() {
+                    None => in_code,
+                    Some("function") => true,
+                    Some("data") => false,
+                    Some(other) => return Err(invalid(format!("{source}: symbol kind {other:?} must be function or data"))),
+                };
+                if function {
+                    if !in_code {
+                        return Err(invalid(format!("{source}: function {name:?} at {a:#X} is outside the analysed code")));
+                    }
+                    imp.symbols.push(json!({"address":a,"name":name,"kind":"function"}));
+                } else {
+                    let size = words.next().map(|w| w.parse::<u32>().map_err(|_| invalid(format!("{source}: data size {w:?} must be 1, 2 or 4")))).transpose()?;
+                    valid_size(size)?;
+                    let at = aliases(&imp.mapping, a);
+                    if at.is_empty() {
+                        return Err(invalid(format!("{source}: data {name:?} at {a:#X} is outside the analysed memory")));
+                    }
+                    for a in at {
+                        imp.symbols.push(json!({"address":a,"name":name,"kind":"data","size":size}));
+                    }
+                }
             }
         }
     }
@@ -1430,7 +1705,8 @@ struct Analysis {
     path: PathBuf,
     manifest: Manifest,
     index: Value,
-    fresh_query: Option<Value>,
+    /// Decompile results produced during this call's import, by folded address.
+    fresh_query: BTreeMap<u32, Value>,
     _lock: Lock,
 }
 
@@ -1448,11 +1724,13 @@ fn budget(input: &Input) -> Result<Instant> {
             || !input.entries.is_empty()
             || !input.banks.is_empty()
             || !input.registers.is_empty()
+            || !input.volatile.is_empty()
+            || input.macsbug
             || !input.symbols.is_empty()
             || input.z80_rom_offset.is_some()
             || input.reanalyze)
     {
-        return Err(invalid("import options (from_state, evidence, ranges, entries, banks, registers, symbols, z80_*, reanalyze) require rom, not an analysis handle"));
+        return Err(invalid("import options (from_state, evidence, ranges, entries, banks, registers, volatile, macsbug, symbols, z80_*, reanalyze) require rom, not an analysis handle"));
     }
     Ok(Instant::now() + Duration::from_secs(input.timeout))
 }
@@ -1479,7 +1757,7 @@ fn cached(path: PathBuf, lock: Lock) -> Result<Analysis> {
         return Err(fail("invalid_artifact", "analysis input copy has changed"));
     }
     let index = read_json(&manifest.index)?;
-    Ok(Analysis { path, manifest, index, fresh_query: None, _lock: lock })
+    Ok(Analysis { path, manifest, index, fresh_query: BTreeMap::new(), _lock: lock })
 }
 
 fn open_analysis(path: &str, deadline: Instant, ctx: &Context) -> Result<Analysis> {
@@ -1498,7 +1776,7 @@ fn jump_tables(ev: &Evidence) -> Vec<Value> {
     by_source.into_iter().filter(|(_, t)| t.len() >= 2).map(|(from, targets)| json!({"from":from,"targets":targets})).collect()
 }
 
-fn prepare(input: &Input, addr: Option<u32>, decompile_timeout: u32, deadline: Instant, ctx: &Context) -> Result<Analysis> {
+fn prepare(input: &Input, addrs: &[u32], decompile_timeout: u32, deadline: Instant, ctx: &Context) -> Result<Analysis> {
     if let Some(path) = &input.analysis {
         return open_analysis(path, deadline, ctx);
     }
@@ -1554,8 +1832,8 @@ fn prepare(input: &Input, addr: Option<u32>, decompile_timeout: u32, deadline: I
     let mut request = json!({"mode":"export","index":index_path,"decompile_timeout":decompile_timeout,"listing_limit":LISTING_LIMIT,
         "query_result":attempt.join("query.json"),"jump_tables":tables,"executed":imp.evidence.executed,
         "clear_data_blocks":imp.mapping.blocks.iter().filter(|b| b.bytes.is_some()).map(|b| b.name.clone()).collect::<Vec<_>>()});
-    if let Some(a) = addr {
-        request["addr"] = json!(a);
+    if !addrs.is_empty() {
+        request["addrs"] = json!(addrs);
     }
     let export = attempt.join("export.json");
     save_json(&export, &request)?;
@@ -1616,16 +1894,16 @@ fn prepare(input: &Input, addr: Option<u32>, decompile_timeout: u32, deadline: I
     };
     save_json(&path, &manifest)?;
     pending.keep();
-    let fresh_query = match addr {
-        Some(a) => {
-            let value = read_json(&attempt.join("query.json"))?;
-            if value["status"] == "complete" {
-                save_json(&attempt.join(format!("decompile-{a:08X}.json")), &value)?;
+    let mut fresh_query = BTreeMap::new();
+    if !addrs.is_empty() {
+        let value = read_json(&attempt.join("query.json"))?;
+        for (&a, r) in addrs.iter().zip(value["results"].as_array().into_iter().flatten()) {
+            if r["status"] == "complete" {
+                save_json(&attempt.join(format!("decompile-{a:08X}.json")), r)?;
             }
-            Some(value)
+            fresh_query.insert(a, r.clone());
         }
-        None => None,
-    };
+    }
     Ok(Analysis { path, manifest, index, fresh_query, _lock: lock })
 }
 
@@ -1647,6 +1925,32 @@ fn valid_limit(n: usize) -> Result<()> {
 fn references(a: &Analysis) -> &[Value] {
     a.index["references"].as_array().map_or(&[], Vec::as_slice)
 }
+/// Reference rows with the names of the functions at each end, so a caller
+/// reading callees or xrefs needs no second lookup per row: `function_name`
+/// for the function containing `from`, `to_name` for a function entered at `to`.
+fn named(a: &Analysis, rows: Vec<Value>) -> Vec<Value> {
+    let cpu = a.manifest.cpu;
+    let names: BTreeMap<u32, &str> = a.index["functions"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice)
+        .iter()
+        .filter_map(|f| Some((cpu.fold(hex(f["entry"].as_str()?).ok()?), f["name"].as_str()?)))
+        .collect();
+    let name_at = |v: &Value| v.as_str().and_then(|s| hex(s).ok()).and_then(|x| names.get(&cpu.fold(x)).copied());
+    rows.into_iter()
+        .map(|mut r| {
+            if let Some(n) = name_at(&r["function"]) {
+                r["function_name"] = json!(n);
+            }
+            if r["to_space"] == "ram" {
+                if let Some(n) = name_at(&r["to"]) {
+                    r["to_name"] = json!(n);
+                }
+            }
+            r
+        })
+        .collect()
+}
 fn same_address(cpu: Cpu, value: &Value, target: u32) -> bool {
     value.as_str().and_then(|s| hex(s).ok()).is_some_and(|addr| cpu.fold(addr) == target)
 }
@@ -1656,7 +1960,8 @@ fn summary(a: &Analysis) -> Value {
     json!({"analysis":a.path,"cpu":m.cpu,"rom_sha256":m.subject.sha256,"state_sha256":m.state_sha256,"ghidra_version":m.installation.version,
         "language":m.language,"project":m.project_dir.join("project.gpr"),"function_count":a.index["functions"].as_array().map_or(0,Vec::len),
         "instructions":a.index["instructions"],"mapping":m.mapping,"provenance":m.provenance,"evidence_coverage":a.index["evidence"],
-        "revision":m.revision,"references_truncated":a.index["references_truncated"]})
+        "revision":m.revision,"references_truncated":a.index["references_truncated"],
+        "base_register_calls":a.index["base_register_calls"]})
 }
 
 /// Wraps a result with the analysis' identity, coverage and standing limitations.
@@ -1672,6 +1977,13 @@ fn envelope(tool: &str, a: &Analysis, data: Value, partial: Option<String>) -> E
         conditions.push(format!(
             "runtime evidence: {} executed PCs, {} inside analysed functions, {} not disassembled",
             ev["executed_pcs"], ev["in_functions"], ev["not_disassembled"]
+        ));
+    }
+    let base = &a.index["base_register_calls"];
+    if base["resolved"].as_u64().unwrap_or(0) > 0 || base["rejected"].as_array().is_some_and(|r| !r.is_empty()) {
+        conditions.push(format!(
+            "base-register calls (jsr d16(An) with register context): {} resolved, {} rejected (see base_register_calls)",
+            base["resolved"], base["rejected"].as_array().map_or(0, Vec::len)
         ));
     }
     let mut coverage = Coverage::complete(conditions);
@@ -1733,7 +2045,7 @@ pub fn doctor(args: DoctorArgs, ctx: &Context) -> Result<Envelope<Value>> {
 pub fn analyze(args: AnalyzeArgs, ctx: &Context) -> Result<Envelope<Value>> {
     let input = args.input();
     let deadline = budget(&input)?;
-    let a = prepare(&input, None, function_timeout(), deadline, ctx)?;
+    let a = prepare(&input, &[], function_timeout(), deadline, ctx)?;
     Ok(envelope("analyze", &a, summary(&a), None))
 }
 
@@ -1741,7 +2053,7 @@ pub fn functions(args: FunctionsArgs, ctx: &Context) -> Result<Envelope<Value>> 
     valid_limit(args.limit)?;
     let input = args.input();
     let deadline = budget(&input)?;
-    let a = prepare(&input, None, function_timeout(), deadline, ctx)?;
+    let a = prepare(&input, &[], function_timeout(), deadline, ctx)?;
     let filter = args.filter.unwrap_or_default().to_lowercase();
     let rows: Vec<Value> = a.index["functions"]
         .as_array()
@@ -1759,7 +2071,7 @@ pub fn xrefs(args: XrefsArgs, ctx: &Context) -> Result<Envelope<Value>> {
     valid_limit(args.limit)?;
     let input = args.input();
     let deadline = budget(&input)?;
-    let a = prepare(&input, None, function_timeout(), deadline, ctx)?;
+    let a = prepare(&input, &[], function_timeout(), deadline, ctx)?;
     let cpu = a.manifest.cpu;
     let target = cpu.fold(hex(&args.addr)?);
     let to: Vec<Value> = references(&a).iter().filter(|r| same_address(cpu, &r["to"], target) && r["to_space"] == "ram").cloned().collect();
@@ -1767,8 +2079,8 @@ pub fn xrefs(args: XrefsArgs, ctx: &Context) -> Result<Envelope<Value>> {
     let mut out = summary(&a);
     out["requested_addr"] = json!(args.addr);
     out["addr"] = json!(format!("0x{target:08X}"));
-    out["references_to"] = page(&to, args.offset, args.limit);
-    out["references_from"] = page(&from, args.offset, args.limit);
+    out["references_to"] = page(&named(&a, to), args.offset, args.limit);
+    out["references_from"] = page(&named(&a, from), args.offset, args.limit);
     Ok(envelope("xrefs", &a, out, None))
 }
 
@@ -1780,16 +2092,82 @@ pub fn decompile(args: DecompileArgs, ctx: &Context) -> Result<Envelope<Value>> 
     let deadline = budget(&input)?;
     let requested = hex(&args.addr)?;
     // Before analysis, the CPU comes from the arguments; afterwards from the manifest.
-    let mut a = prepare(&input, Some(input.cpu.fold(requested)), args.decompile_timeout, deadline, ctx)?;
+    let mut a = prepare(&input, &[input.cpu.fold(requested)], args.decompile_timeout, deadline, ctx)?;
+    let addr = a.manifest.cpu.fold(requested);
+    let result = query(&mut a, &input, &[addr], args.decompile_timeout, deadline, ctx)?.remove(0);
+    let (one, partial) = decompiled(&a, &args.addr, addr, result, args.brief);
+    let mut out = summary(&a);
+    for (k, v) in one.as_object().unwrap() {
+        out[k] = v.clone();
+    }
+    if args.brief {
+        let o = out.as_object_mut().unwrap();
+        o.remove("mapping");
+        o.remove("provenance");
+    }
+    Ok(envelope("decompile", &a, out, partial))
+}
+
+pub fn decompile_batch(args: DecompileBatchArgs, ctx: &Context) -> Result<Envelope<Value>> {
+    if !(1..=300).contains(&args.decompile_timeout) {
+        return Err(invalid("decompile_timeout must be 1..=300"));
+    }
+    if !(1..=MAX_BATCH).contains(&args.addrs.len()) {
+        return Err(invalid(format!("addrs must list 1..={MAX_BATCH} addresses")));
+    }
+    let input = args.input();
+    let deadline = budget(&input)?;
+    let requested = args.addrs.iter().map(|s| hex(s)).collect::<Result<Vec<_>>>()?;
+    let folded: Vec<u32> = requested.iter().map(|&r| input.cpu.fold(r)).collect();
+    let mut a = prepare(&input, &folded, args.decompile_timeout, deadline, ctx)?;
     let cpu = a.manifest.cpu;
-    let addr = cpu.fold(requested);
+    let folded: Vec<u32> = requested.iter().map(|&r| cpu.fold(r)).collect();
+    let results = query(&mut a, &input, &folded, args.decompile_timeout, deadline, ctx)?;
+    let mut incomplete = Vec::new();
+    let rows: Vec<Value> = args
+        .addrs
+        .iter()
+        .zip(&folded)
+        .zip(results)
+        .map(|((text, &addr), result)| {
+            let (row, partial) = decompiled(&a, text, addr, result, args.brief);
+            if partial.is_some() {
+                incomplete.push(format!("0x{addr:08X}"));
+            }
+            row
+        })
+        .collect();
+    let mut out = summary(&a);
+    if args.brief {
+        let o = out.as_object_mut().unwrap();
+        o.remove("mapping");
+        o.remove("provenance");
+    }
+    out["results"] = json!(rows);
+    let partial = (!incomplete.is_empty()).then(|| format!("results for {}", incomplete.join(", ")));
+    Ok(envelope("decompile_batch", &a, out, partial))
+}
+
+/// Raw Ghidra results for each folded address, in order: from this call's
+/// import, the per-analysis cache, or one worker run for all the rest.
+fn query(a: &mut Analysis, input: &Input, addrs: &[u32], decompile_timeout: u32, deadline: Instant, ctx: &Context) -> Result<Vec<Value>> {
     let attempt = a.manifest.index.parent().unwrap().to_path_buf();
-    let result_path = attempt.join(format!("decompile-{addr:08X}.json"));
-    let mut result = if let Some(result) = a.fresh_query.take() {
-        result
-    } else if result_path.is_file() {
-        read_json(&result_path)?
-    } else {
+    let cache = |addr: u32| attempt.join(format!("decompile-{addr:08X}.json"));
+    let mut found = BTreeMap::new();
+    let mut missing = Vec::new();
+    for &addr in addrs {
+        if found.contains_key(&addr) {
+            continue;
+        }
+        if let Some(r) = a.fresh_query.remove(&addr) {
+            found.insert(addr, r);
+        } else if cache(addr).is_file() {
+            found.insert(addr, read_json(&cache(addr))?);
+        } else if !missing.contains(&addr) {
+            missing.push(addr);
+        }
+    }
+    if !missing.is_empty() {
         let install = installation(input.ghidra_home.as_deref().or(Some(&a.manifest.installation.home)))?;
         if install.build_sha256 != a.manifest.installation.build_sha256 {
             return Err(fail("stale_analysis", "Ghidra version changed; query the rom with reanalyze"));
@@ -1798,7 +2176,7 @@ pub fn decompile(args: DecompileArgs, ctx: &Context) -> Result<Envelope<Value>> 
         let output = request.with_extension("result.json");
         save_json(
             &request,
-            &json!({"mode":"query","addr":addr,"decompile_timeout":args.decompile_timeout,"listing_limit":LISTING_LIMIT,"query_result":output}),
+            &json!({"mode":"query","addrs":missing,"decompile_timeout":decompile_timeout,"listing_limit":LISTING_LIMIT,"query_result":output}),
         )?;
         let mut cmd = command(&install, &attempt)?;
         cmd.arg(&a.manifest.project_dir)
@@ -1810,47 +2188,63 @@ pub fn decompile(args: DecompileArgs, ctx: &Context) -> Result<Envelope<Value>> 
             .arg(SCRIPT_NAME)
             .arg(&request);
         run_worker(&mut cmd, &request.with_extension("log"), deadline, ctx)?;
-        let result = read_json(&output)
+        let value = read_json(&output)
             .map_err(|e| fail("ghidra_failed", format!("{}; inspect {}", e.message, request.with_extension("log").display())))?;
+        let results = value["results"].as_array().filter(|r| r.len() == missing.len())
+            .ok_or_else(|| fail("ghidra_failed", format!("query returned no results; inspect {}", request.with_extension("log").display())))?;
         // Ghidra may touch project metadata even in read-only mode.
         a.manifest.project_fingerprint = fingerprint(&a.manifest.project_dir)?;
         save_json(&a.path, &a.manifest)?;
-        if result["status"] == "complete" {
-            save_json(&result_path, &result)?;
+        for (&addr, r) in missing.iter().zip(results) {
+            if r["status"] == "complete" {
+                save_json(&cache(addr), r)?;
+            }
+            found.insert(addr, r.clone());
         }
-        result
-    };
+    }
+    Ok(addrs.iter().map(|addr| found[addr].clone()).collect())
+}
+
+/// One function's result: pseudocode, listing (unless brief) and named
+/// callers/callees. The second value names what is partial, if anything.
+fn decompiled(a: &Analysis, requested: &str, addr: u32, mut result: Value, brief: bool) -> (Value, Option<String>) {
+    let cpu = a.manifest.cpu;
     let entry = result["function"]["entry"].as_str().unwrap_or("").to_string();
     let entry_addr = hex(&entry).ok().map(|e| cpu.fold(e));
-    let callers: Vec<Value> = references(&a)
+    let callers: Vec<Value> = references(a)
         .iter()
         .filter(|r| r["call"] == true && r["to_space"] == "ram" && entry_addr.is_some_and(|e| same_address(cpu, &r["to"], e)))
         .cloned()
         .collect();
-    let callees: Vec<Value> = references(&a).iter().filter(|r| r["call"] == true && r["function"] == entry).cloned().collect();
+    let callees: Vec<Value> = references(a).iter().filter(|r| r["call"] == true && r["function"] == entry).cloned().collect();
     let status = result["status"].as_str().unwrap_or("unknown").to_string();
-    let mut out = summary(&a);
-    out["requested_addr"] = json!(args.addr);
+    let result_path = a.manifest.index.parent().unwrap().join(format!("decompile-{addr:08X}.json"));
+    let mut out = json!({});
+    out["requested_addr"] = json!(requested);
     out["addr"] = json!(format!("0x{addr:08X}"));
     out["decompile_status"] = json!(status);
     out["function"] = result["function"].take();
     out["pseudocode"] = result["pseudocode"].take();
     out["diagnostic"] = result["diagnostic"].take();
-    out["listing"] = result["listing"].take();
-    out["listing_truncated"] = result["listing_truncated"].take();
-    out["callers"] = page(&callers, 0, 100);
-    out["callees"] = page(&callees, 0, 100);
+    out["callers"] = page(&named(a, callers), 0, 100);
+    out["callees"] = page(&named(a, callees), 0, 100);
     out["result_file"] = if result_path.exists() { json!(result_path) } else { Value::Null };
     let mut partial = (status != "complete").then(|| format!("pseudocode (decompile status {status})"));
-    if out["listing_truncated"] == true {
-        partial.get_or_insert_with(|| format!("listing[{LISTING_LIMIT}..]"));
+    if brief {
+        out["brief"] = json!(true);
+    } else {
+        out["listing"] = result["listing"].take();
+        out["listing_truncated"] = result["listing_truncated"].take();
+        if out["listing_truncated"] == true {
+            partial.get_or_insert_with(|| format!("listing[{LISTING_LIMIT}..]"));
+        }
     }
-    Ok(envelope("decompile", &a, out, partial))
+    (out, partial)
 }
 
 fn patches(cpu: Cpu, index: &Value, patch: Patch) -> Result<(Vec<Value>, Vec<Value>)> {
-    if patch.functions.is_empty() || patch.functions.len() > 1000 {
-        return Err(invalid("patch requires 1..=1000 functions"));
+    if patch.functions.len() > 1000 {
+        return Err(invalid("patch allows at most 1000 functions"));
     }
     let functions = index["functions"].as_array().ok_or_else(|| fail("invalid_artifact", "missing functions"))?;
     // Ghidra keys functions by their imported address, which can be an alias.
@@ -1916,6 +2310,68 @@ fn patches(cpu: Cpu, index: &Value, patch: Patch) -> Result<(Vec<Value>, Vec<Val
     Ok((rows.into_values().collect(), conflicts))
 }
 
+/// Label rows for Ghidra, one per alias of each address, so absolute-short
+/// work RAM accesses ($E4EE.w) carry the name as well as long ones.
+fn label_rows(mapping: &Mapping, labels: Vec<LabelPatch>) -> Result<Vec<Value>> {
+    let mut rows = Vec::new();
+    let mut seen = BTreeSet::new();
+    for l in labels {
+        let addr = mapping.cpu.fold(hex(&l.addr)?);
+        if !valid_name(&l.name) {
+            return Err(invalid("names must be ASCII identifiers, at most 128 characters"));
+        }
+        if let Some(c) = &l.comment {
+            if c.len() > 16384 || c.contains('\0') {
+                return Err(invalid("comment exceeds 16 KiB or contains NUL"));
+            }
+        }
+        if !seen.insert(addr) {
+            return Err(invalid(format!("duplicate label at 0x{addr:08X}")));
+        }
+        valid_size(l.size)?;
+        let at = aliases(mapping, addr);
+        if at.is_empty() {
+            return Err(invalid(format!("label {:?} at 0x{addr:08X} is outside the analysed memory", l.name)));
+        }
+        for a in at {
+            let mut row = json!({"address":a,"name":l.name});
+            if let Some(n) = l.size {
+                row["size"] = json!(n);
+            }
+            if let Some(c) = &l.comment {
+                row["comment"] = json!(c);
+            }
+            rows.push(row);
+        }
+    }
+    Ok(rows)
+}
+
+fn valid_size(size: Option<u32>) -> Result<()> {
+    match size {
+        None | Some(1 | 2 | 4) => Ok(()),
+        Some(n) => Err(invalid(format!("data size {n} must be 1, 2 or 4"))),
+    }
+}
+
+/// Every analysed address (image or block) that shows the folded address `a`.
+fn aliases(mapping: &Mapping, a: u32) -> Vec<u32> {
+    let cpu = mapping.cpu;
+    let mut out = Vec::new();
+    if a >= mapping.base && a < mapping.base + mapping.size {
+        out.push(a);
+    }
+    for b in &mapping.blocks {
+        let target = cpu.fold(b.mapped_to.unwrap_or(b.start));
+        if target <= a && (a as u64) < target as u64 + b.size as u64 {
+            out.push(b.start + (a - target));
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
 fn copy_project(source: &Path, target: &Path) -> Result<()> {
     fs::create_dir(target).map_err(io)?;
     for entry in fs::read_dir(source).map_err(io)? {
@@ -1942,16 +2398,21 @@ pub fn annotate(args: AnnotateArgs, ctx: &Context) -> Result<Envelope<Value>> {
     if !(1..=3600).contains(&args.timeout) {
         return Err(invalid("timeout must be 1..=3600"));
     }
-    let patch = match (&args.file, args.functions.is_empty()) {
-        (Some(file), true) => {
+    let inline = !args.functions.is_empty() || !args.labels.is_empty();
+    let mut patch: Patch = match (&args.file, inline) {
+        (Some(file), false) => {
             let file = if file.is_absolute() { file.clone() } else { ctx.root.join(file) };
             serde_json::from_value(read_json(&file)?).map_err(invalid)?
         }
-        (None, false) => Patch { functions: args.functions.clone() },
-        _ => return Err(invalid("give exactly one of file or functions")),
+        (None, true) => Patch { functions: args.functions.clone(), labels: args.labels.clone() },
+        _ => return Err(invalid("give exactly one of file or functions/labels")),
     };
+    if !(1..=1000).contains(&(patch.functions.len() + patch.labels.len())) {
+        return Err(invalid("patch requires 1..=1000 functions and labels"));
+    }
     let deadline = Instant::now() + Duration::from_secs(args.timeout);
     let mut a = open_analysis(&args.analysis, deadline, ctx)?;
+    let labels = label_rows(&a.manifest.mapping, std::mem::take(&mut patch.labels))?;
     let (patches, conflicts) = patches(a.manifest.cpu, &a.index, patch)?;
     let install = installation(args.ghidra_home.as_deref().or(Some(&a.manifest.installation.home)))?;
     if install.build_sha256 != a.manifest.installation.build_sha256 {
@@ -1967,7 +2428,7 @@ pub fn annotate(args: AnnotateArgs, ctx: &Context) -> Result<Envelope<Value>> {
     let index = attempt.join("index.json");
     let request = attempt.join("annotations.json");
     let executed = read_json(&a.manifest.setup_request).map(|s| s["executed"].clone()).unwrap_or(json!([]));
-    save_json(&request, &json!({"mode":"annotate","patches":patches,"index":index,"executed":executed}))?;
+    save_json(&request, &json!({"mode":"annotate","patches":patches,"labels":labels,"index":index,"executed":executed}))?;
     let mut cmd = command(&install, &attempt)?;
     cmd.arg(&project)
         .arg("project")
@@ -1984,6 +2445,7 @@ pub fn annotate(args: AnnotateArgs, ctx: &Context) -> Result<Envelope<Value>> {
     }
     // Annotation runs without the evidence request; keep the import's override count.
     fresh["jump_table_overrides"] = a.index["jump_table_overrides"].clone();
+    fresh["base_register_calls"] = a.index["base_register_calls"].clone();
     save_json(&index, &fresh)?;
     a.index = fresh;
     a.manifest.revision += 1;
@@ -1997,6 +2459,7 @@ pub fn annotate(args: AnnotateArgs, ctx: &Context) -> Result<Envelope<Value>> {
     let mut out = summary(&a);
     out["conflicts"] = json!(conflicts);
     out["patches"] = json!(patches);
+    out["labels"] = json!(labels);
     Ok(envelope("annotate", &a, out, None))
 }
 
@@ -2085,6 +2548,7 @@ pub fn run(name: &str, arguments: Value, ctx: &Context) -> Result<Envelope<Value
         "ghidra.analyze" => analyze(de(arguments)?, ctx),
         "ghidra.functions" => functions(de(arguments)?, ctx),
         "ghidra.decompile" => decompile(de(arguments)?, ctx),
+        "ghidra.decompile_batch" => decompile_batch(de(arguments)?, ctx),
         "ghidra.xrefs" => xrefs(de(arguments)?, ctx),
         "ghidra.annotate" => annotate(de(arguments)?, ctx),
         "ghidra.export_symbols" => export_symbols(de(arguments)?, ctx),
@@ -2138,6 +2602,103 @@ mod tests {
         assert_eq!(hex("$1A2C").unwrap(), 0x1A2C);
         assert_eq!(hex("0x00FF0000").unwrap(), 0xFF_0000);
         assert!(hex("zz").is_err());
+    }
+
+    /// Plain symbol lines name data as well as functions; a WRAM name also
+    /// lands on the absolute-short alias.
+    #[test]
+    fn plain_symbol_lines_name_data_and_its_aliases() {
+        let (dir, ctx) = context();
+        let mut inp = input(&rom(dir.path()));
+        fs::write(dir.path().join("game.sym"), "220 Helper\nFFE800 player_x data 2\n300 table data\n").unwrap();
+        inp.symbols = vec![dir.path().join("game.sym").display().to_string()];
+        let mut imp = import(&inp, &ctx).unwrap();
+        seed_symbols(&inp, &mut imp, &ctx).unwrap();
+        let mut data: Vec<(u64, &str, &Value)> = imp.symbols.iter().filter(|s| s["kind"] == "data")
+            .map(|s| (s["address"].as_u64().unwrap(), s["name"].as_str().unwrap(), &s["size"])).collect();
+        data.sort_by_key(|d| d.0);
+        assert_eq!(data, [(0x300, "table", &Value::Null), (0xFF_E800, "player_x", &json!(2)), (0xFFFF_E800, "player_x", &json!(2))]);
+        assert!(imp.symbols.iter().any(|s| s["name"] == "Helper" && s["kind"] == "function"));
+        for bad in ["FFE800 ram_fn function\n", "FFE800 x data 3\n", "FFE800 x thing\n"] {
+            fs::write(dir.path().join("game.sym"), bad).unwrap();
+            let mut imp = import(&inp, &ctx).unwrap();
+            assert!(seed_symbols(&inp, &mut imp, &ctx).is_err(), "{bad}");
+        }
+        let rows = label_rows(&imp.mapping, vec![LabelPatch { addr: "FFFFE800".into(), name: "low".into(), size: Some(2), comment: None }]).unwrap();
+        assert_eq!(rows.iter().map(|r| r["address"].as_u64().unwrap()).collect::<Vec<_>>(), [0xFF_E800, 0xFFFF_E800]);
+        assert!(label_rows(&imp.mapping, vec![LabelPatch { addr: "800000".into(), name: "x".into(), size: None, comment: None }]).is_err());
+    }
+
+    /// MacsBug names follow the return; the routine starts at its link a6, the
+    /// next one after the literal block; % becomes _ and digits-first is not a name.
+    #[test]
+    fn macsbug_names_follow_returns() {
+        let mut rom = vec![0u8; 0x200];
+        rom.extend([0x4E, 0x71, 0x4E, 0x56, 0, 0, 0x70, 1, 0x4E, 0x5E, 0x4E, 0x75]); // nop; link; moveq; unlk; rts
+        rom.extend([0x85]);
+        rom.extend(b"Hello");
+        rom.extend([0, 2, 0xAA, 0xBB]); // two literal bytes
+        rom.extend([0x4E, 0x56, 0, 0, 0x4E, 0x75, 0x88]);
+        rom.extend(b"I%MUL4xy");
+        rom.extend([0, 0, 0, 0x4E, 0x75, 0x85]);
+        rom.extend(b"12345");
+        rom.extend([0; 8]);
+        let names = macsbug_names(&rom);
+        assert_eq!(names, [(0x202, 0x20C, "Hello".to_string()), (0x216, 0x21C, "I_MUL4xy".to_string())]);
+    }
+
+    /// A polled counter is volatile in WRAM and in its absolute-short alias;
+    /// the rest of RAM stays ordinary so stores still fold.
+    #[test]
+    fn volatile_ranges_split_ram_and_its_alias() {
+        let (dir, ctx) = context();
+        let mut inp = input(&rom(dir.path()));
+        inp.volatile = vec!["FFFFE4EE:4".into(), "FFE472".into()];
+        let imp = import(&inp, &ctx).unwrap();
+        assert_eq!(imp.mapping.volatile, vec![(0xFF_E472, 0xFF_E473), (0xFF_E4EE, 0xFF_E4F2)]);
+        let vol: Vec<(&str, u32, u32)> = imp.mapping.blocks.iter().filter(|b| b.is_volatile && b.name.starts_with("WRAM"))
+            .map(|b| (b.name.as_str(), b.start, b.size)).collect();
+        assert_eq!(vol, [("WRAM_FFE472", 0xFF_E472, 1), ("WRAM_FFE4EE", 0xFF_E4EE, 4),
+            ("WRAM_ABS_W_FFFFE472", 0xFFFF_E472, 1), ("WRAM_ABS_W_FFFFE4EE", 0xFFFF_E4EE, 4)]);
+        let alias = imp.mapping.blocks.iter().find(|b| b.name == "WRAM_ABS_W_FFFFE4EE").unwrap();
+        assert_eq!(alias.mapped_to, Some(0xFF_E4EE));
+        let total: u32 = imp.mapping.blocks.iter().filter(|b| b.name.starts_with("WRAM_ABS_W")).map(|b| b.size).sum();
+        assert_eq!(total, 0x1_0000);
+        for bad in ["200", "FFE4EE:0", "FFFFF0:20"] {
+            inp.volatile = vec![bad.into()];
+            assert!(import(&inp, &ctx).is_err(), "{bad}");
+        }
+    }
+
+    /// Watch writes from an interrupt handler mark their bytes volatile beside
+    /// requested ranges; main-code writes and handler stack frames do not.
+    #[test]
+    fn interrupt_watch_writes_are_volatile() {
+        let (dir, ctx) = context();
+        let write = |pc: u32, address: u32, bits: u8, in_interrupt: bool, sp: u32| {
+            json!({"pc":pc,"address":address,"folded_offset":address & 0xFFFF,"width_bits":bits,"before":0,"value":1,"frame":3,
+                "writer":"m68000","d":[0,0,0,0,0,0,0,0],"a":[0,0,0,0,0,0,0,sp],"sr":0x2600,"in_interrupt":in_interrupt}).to_string() + "\n"
+        };
+        let rows = [
+            write(0x250, 0xFF_E4EE, 16, true, 0xFF_FFF0),
+            write(0x252, 0xFFFF_E4EE, 32, true, 0xFF_FFF0), // alias, wider
+            write(0x210, 0xFF_E000, 16, false, 0xFF_FFF0),
+            write(0x254, 0xFF_FFE8, 32, true, 0xFF_FFEC), // movem push
+        ];
+        let path = dir.path().join("watch.jsonl");
+        fs::write(&path, rows.concat()).unwrap();
+        let mut a = input(&rom(dir.path()));
+        a.evidence = vec![path.display().to_string()];
+        a.volatile = vec!["FFE472".into()];
+        let imp = import(&a, &ctx).unwrap();
+        assert_eq!(imp.mapping.volatile, vec![(0xFF_E472, 0xFF_E473), (0xFF_E4EE, 0xFF_E4F2)]);
+        let summary = imp.evidence.summary();
+        assert_eq!(summary["volatile_from_evidence"], json!([{"address":0xFF_E4EE,"length":4,"writer_pc":0x250,"writes":2,
+            "why":"written inside an interrupt handler"}]));
+        assert_eq!(summary["interrupt_stack_writes"], 1);
+        assert_eq!(imp.evidence.sources[0]["kind"], "watch");
+        let piece = imp.mapping.blocks.iter().find(|b| b.name == "WRAM_FFE4EE").unwrap();
+        assert!(piece.is_volatile && piece.comment.as_deref().unwrap().contains("interrupt"));
     }
 
     #[test]
@@ -2257,7 +2818,7 @@ mod tests {
     fn validation_and_missing_ghidra_fail_before_any_project_is_created() {
         let (dir, ctx) = context();
         let rom = rom(dir.path());
-        let run = |a: Input| prepare(&a, None, 30, budget(&a)?, &ctx).map(|_| ());
+        let run = |a: Input| prepare(&a, &[], 30, budget(&a)?, &ctx).map(|_| ());
         let mut both = input(&rom);
         both.analysis = Some("analysis.json".into());
         assert_eq!(budget(&both).err().unwrap().code, "invalid_arguments");

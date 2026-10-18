@@ -16,7 +16,7 @@ mdx --root /path/to/project boot --rom game.md \
   --input next-input.json --trace 0 --save-state
 
 mdx --root /path/to/project ram dump --rom game.md \
-  --from-state sha256:STATE_HASH --instructions 0 --range 0xFF0A40:32
+  --from-state sha256:STATE_HASH --instructions 0 --range 0xFF0A40:0x20
 
 mdx --root /path/to/project trace --from-state sha256:STATE_HASH --save-state \
   --args '{"rom":"game.md","frames":2,"instructions":100000,"max_records":16}'

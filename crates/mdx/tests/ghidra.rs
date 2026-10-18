@@ -110,7 +110,20 @@ fn live_ghidra_round_trip_uses_runtime_evidence() {
     assert_eq!(data["evidence_coverage"]["in_functions"], 5);
     let caller = &data["callers"]["items"][0];
     assert_eq!((caller["from"].as_str(), caller["type"].as_str()), (Some("0x0000020C"), Some("COMPUTED_CALL")));
+    // Rows name the functions at both ends, so no second lookup is needed.
+    assert!(caller["function_name"].is_string(), "{caller}");
     let analysis = data["analysis"].as_str().unwrap().to_string();
+
+    let brief = call("ghidra.decompile", json!({"analysis":analysis,"addr":"242","brief":true}), root);
+    assert!(brief["data"]["pseudocode"].is_string() && brief["data"]["listing"].is_null() && brief["data"]["mapping"].is_null(), "{brief}");
+    // One Ghidra run for several functions; the cached 0x242 result is reused.
+    let batch = call("ghidra.decompile_batch", json!({"analysis":analysis,"addrs":["220","242","220"]}), root);
+    let rows = batch["data"]["results"].as_array().unwrap();
+    assert_eq!(rows.iter().map(|r| r["function"]["entry"].as_str().unwrap()).collect::<Vec<_>>(), ["0x00000220", "0x00000240", "0x00000220"], "{batch}");
+    assert!(rows.iter().all(|r| r["pseudocode"].is_string() && r["listing"].is_null()), "{batch}");
+    let reset = call("ghidra.decompile", json!({"analysis":analysis,"addr":"200"}), root);
+    let callees = reset["data"]["callees"]["items"].as_array().unwrap();
+    assert!(callees.iter().any(|c| c["to"] == "0x00000220" && c["to_name"].is_string()), "{callees:?}");
 
     let functions = call("ghidra.functions", json!({"analysis":analysis,"filter":"vblank"}), root);
     assert_eq!(functions["data"]["functions"]["items"][0]["entry"], "0x00000250");
@@ -127,4 +140,138 @@ fn live_ghidra_round_trip_uses_runtime_evidence() {
     // A fresh analysis without evidence still learns the name from the bound bytes.
     let seeded = call("ghidra.functions", json!({"rom":rom,"symbols":[symbols],"filter":"ReturnOne"}), root);
     assert_eq!(seeded["data"]["functions"]["items"][0]["entry"], "0x00000240", "{seeded}");
+}
+
+/// `Delay`-style poll: store a count, then spin until an interrupt clears it.
+/// Without volatile the decompiler folds the reload into the stored value and
+/// prints an infinite loop; with it the read survives.
+#[test]
+fn live_ghidra_volatile_keeps_polled_reads() {
+    let dir = workspace();
+    let root = dir.path();
+    if call("ghidra.doctor", json!({}), root)["error"]["code"] == "ghidra_unavailable" {
+        eprintln!("skipping: Ghidra not installed");
+        return;
+    }
+    let mut b = vec![0u8; 0x400];
+    b[0..4].copy_from_slice(&0x00FF_1000u32.to_be_bytes());
+    b[4..8].copy_from_slice(&0x200u32.to_be_bytes());
+    b[0x100..0x110].copy_from_slice(b"SEGA MEGA DRIVE ");
+    // move.l #5,($FFE4EE).l; loop: tst.l ($FFE4EE).l; bne.s loop; rts
+    let code = [0x23, 0xFC, 0, 0, 0, 5, 0, 0xFF, 0xE4, 0xEE, 0x4A, 0xB9, 0, 0xFF, 0xE4, 0xEE, 0x66, 0xF8, 0x4E, 0x75];
+    b[0x200..0x200 + code.len()].copy_from_slice(&code);
+    fs::write(root.join("poll.md"), b).unwrap();
+    let plain = call("ghidra.decompile", json!({"rom":"poll.md","addr":"200"}), root);
+    // A plain symbol line names the RAM global; the size makes it a dword, so
+    // the long accesses read `delay_counter` and not `_delay_counter`.
+    fs::write(root.join("poll.sym"), "200 Delay\nFFE4EE delay_counter data 4\n").unwrap();
+    let marked = call("ghidra.decompile", json!({"rom":"poll.md","addr":"200","volatile":["FFE4EE:4"],"symbols":["poll.sym"]}), root);
+    let analysis = marked["data"]["analysis"].as_str().unwrap().to_string();
+    let plain = plain["data"]["pseudocode"].as_str().unwrap().to_string();
+    let marked = marked["data"]["pseudocode"].as_str().unwrap().to_string();
+    assert!(marked.contains("delay_counter = 5;") && marked.contains("!= 0);"), "plain:\n{plain}\nvolatile:\n{marked}");
+    assert!(!marked.contains("while( true )"), "{marked}");
+
+    let annotated = call("ghidra.annotate", json!({"analysis":analysis,"labels":[{"addr":"FFFFE4EE","name":"vblank_wait","size":4,"comment":"VBlank decrements"}]}), root);
+    assert_eq!(annotated["ok"], true, "{annotated}");
+    // WRAM and its absolute-short alias both carry the name.
+    assert_eq!(annotated["data"]["labels"].as_array().unwrap().len(), 2, "{annotated}");
+    let renamed = call("ghidra.decompile", json!({"analysis":analysis,"addr":"200"}), root);
+    let text = renamed["data"]["pseudocode"].as_str().unwrap();
+    assert!(text.contains("vblank_wait = 5;"), "{text}");
+    let bad = call("ghidra.annotate", json!({"analysis":analysis,"labels":[{"addr":"800000","name":"nowhere"}]}), root);
+    assert_eq!(bad["error"]["code"], "invalid_arguments", "{bad}");
+}
+
+/// King's Bounty calls library routines with `jsr d16(a5)` into a table of
+/// `jmp abs.l` stubs. Ghidra loads a pointer from A5+d16 instead, which made
+/// every callee 0x4EF9xxxx. With A5 known, the call names the stub's target;
+/// a stub to an odd address is reported and not followed.
+#[test]
+fn live_ghidra_resolves_base_register_thunks() {
+    let dir = workspace();
+    let root = dir.path();
+    if call("ghidra.doctor", json!({}), root)["error"]["code"] == "ghidra_unavailable" {
+        eprintln!("skipping: Ghidra not installed");
+        return;
+    }
+    let mut b = vec![0u8; 0x400];
+    b[0..4].copy_from_slice(&0x00FF_1000u32.to_be_bytes());
+    b[4..8].copy_from_slice(&0x200u32.to_be_bytes());
+    b[0x100..0x110].copy_from_slice(b"SEGA MEGA DRIVE ");
+    let code: &[(usize, &[u8])] = &[
+        // jsr 0(a5); jsr 6(a5); bra.s *
+        (0x200, &[0x4E, 0xAD, 0, 0, 0x4E, 0xAD, 0, 6, 0x60, 0xFE]),
+        // moveq #1,d0; rts
+        (0x240, &[0x70, 0x01, 0x4E, 0x75]),
+        // jmp $240.l; jmp $241.l (odd: data, never a routine)
+        (0x300, &[0x4E, 0xF9, 0, 0, 0x02, 0x40, 0x4E, 0xF9, 0, 0, 0x02, 0x41]),
+    ];
+    for (at, bytes) in code {
+        b[*at..*at + bytes.len()].copy_from_slice(bytes);
+    }
+    fs::write(root.join("thunk.md"), b).unwrap();
+    fs::write(root.join("thunk.sym"), "240 ReturnOne\n").unwrap();
+    let out = call("ghidra.decompile", json!({"rom":"thunk.md","addr":"200","registers":["A5=300"],"symbols":["thunk.sym"]}), root);
+    assert_eq!(out["ok"], true, "{out}");
+    let data = &out["data"];
+    let text = data["pseudocode"].as_str().unwrap();
+    assert!(text.contains("ReturnOne()"), "{text}");
+    // The bad stub is still the call's destination, just not a function.
+    assert!(!text.contains("(*") && text.contains("0x00000306"), "{text}");
+    let base = &data["base_register_calls"];
+    assert_eq!(base["resolved"], 1, "{base}");
+    assert_eq!(base["rejected"][0]["from"], "0x00000204", "{base}");
+    assert_eq!(base["rejected"][0]["target"], "0x00000306", "{base}");
+    let callees = data["callees"]["items"].as_array().unwrap();
+    assert!(callees.iter().any(|c| c["to"] == "0x00000300" && c["type"] == "CALL_OVERRIDE_UNCONDITIONAL"), "{callees:?}");
+    let functions = call("ghidra.functions", json!({"analysis":data["analysis"]}), root);
+    let entries: Vec<&str> = functions["data"]["functions"]["items"].as_array().unwrap().iter().map(|f| f["entry"].as_str().unwrap()).collect();
+    assert!(!entries.contains(&"0x00000241") && !entries.contains(&"0x00000306"), "{entries:?}");
+}
+
+/// The same poll, but the volatile range comes from a watch run: the VBlank
+/// handler's decrement is an interrupt-context write, so evidence marks the
+/// counter volatile. The handler's own push/pop is a stack frame, not a global.
+#[test]
+fn live_ghidra_volatile_from_interrupt_writes() {
+    let dir = workspace();
+    let root = dir.path();
+    if call("ghidra.doctor", json!({}), root)["error"]["code"] == "ghidra_unavailable" {
+        eprintln!("skipping: Ghidra not installed");
+        return;
+    }
+    let mut b = vec![0u8; 0x400];
+    b[0..4].copy_from_slice(&0x00FF_1000u32.to_be_bytes());
+    b[4..8].copy_from_slice(&0x200u32.to_be_bytes());
+    b[0x78..0x7C].copy_from_slice(&0x250u32.to_be_bytes());
+    b[0x100..0x110].copy_from_slice(b"SEGA MEGA DRIVE ");
+    let code: &[(usize, &[u8])] = &[
+        // move.w #$8164,($C00004).l (VBlank on); move #$2000,sr; jsr $220; bra.s *
+        (0x200, &[0x33, 0xFC, 0x81, 0x64, 0, 0xC0, 0, 4, 0x46, 0xFC, 0x20, 0, 0x4E, 0xB9, 0, 0, 0x02, 0x20, 0x60, 0xFE]),
+        // move.l #5,($FFE4EE).l; loop: tst.l ($FFE4EE).l; bne.s loop; rts
+        (0x220, &[0x23, 0xFC, 0, 0, 0, 5, 0, 0xFF, 0xE4, 0xEE, 0x4A, 0xB9, 0, 0xFF, 0xE4, 0xEE, 0x66, 0xF8, 0x4E, 0x75]),
+        // move.l d0,-(sp); tst.l ($FFE4EE).l; beq.s +6; subq.l #1,($FFE4EE).l; move.l (sp)+,d0; rte
+        (0x250, &[0x2F, 0x00, 0x4A, 0xB9, 0, 0xFF, 0xE4, 0xEE, 0x67, 6, 0x53, 0xB9, 0, 0xFF, 0xE4, 0xEE, 0x20, 0x1F, 0x4E, 0x73]),
+    ];
+    for (at, bytes) in code {
+        b[*at..*at + bytes.len()].copy_from_slice(bytes);
+    }
+    fs::write(root.join("vbl.md"), b).unwrap();
+    let watch = call("watch", json!({"rom":"vbl.md","frames":10,"watch":{"address":0,"length":0x10000}}), root);
+    let records = watch["data"]["records_artifact"]["path"].as_str().unwrap().to_string();
+    let writes = watch["data"]["write_preview"].as_array().unwrap();
+    assert!(writes.iter().any(|w| w["pc"] == 0x25A && w["in_interrupt"] == true), "{writes:?}");
+    assert!(writes.iter().any(|w| w["pc"] == 0x220 && w["in_interrupt"] == false), "{writes:?}");
+
+    fs::write(root.join("vbl.sym"), "220 Delay\nFFE4EE delay_counter data 4\n").unwrap();
+    let out = call("ghidra.decompile", json!({"rom":"vbl.md","addr":"220","evidence":[records],"symbols":["vbl.sym"]}), root);
+    assert_eq!(out["ok"], true, "{out}");
+    let text = out["data"]["pseudocode"].as_str().unwrap();
+    assert!(text.contains("delay_counter = 5;") && text.contains("!= 0);") && !text.contains("while( true )"), "{text}");
+    let evidence = &out["data"]["provenance"]["evidence"];
+    let marked = evidence["volatile_from_evidence"].as_array().unwrap();
+    assert_eq!(marked.len(), 1, "{evidence}");
+    assert_eq!((marked[0]["address"].as_u64(), marked[0]["length"].as_u64(), marked[0]["writer_pc"].as_u64()), (Some(0xFF_E4EE), Some(4), Some(0x25A)));
+    assert!(evidence["interrupt_stack_writes"].as_u64().unwrap() > 0, "{evidence}");
 }

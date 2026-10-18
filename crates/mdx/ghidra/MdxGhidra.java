@@ -149,7 +149,9 @@ public class MdxGhidra extends HeadlessScript {
                     if (f == null) throw new IOException("function overlaps existing code");
                     f.setName(s.get("name").getAsString(), s.has("source") && s.get("source").getAsString().equals("imported") ? SourceType.IMPORTED : SourceType.USER_DEFINED);
                 } else {
-                    createLabel(a, s.get("name").getAsString(), false, SourceType.USER_DEFINED);
+                    // Primary, so pseudocode reads the name instead of DAT_/Ram addresses.
+                    createLabel(a, s.get("name").getAsString(), true, SourceType.USER_DEFINED);
+                    sized(a, s);
                 }
             } catch (Exception e) {
                 warnings.add("symbol " + hex(a) + ": " + e.getMessage());
@@ -211,6 +213,114 @@ public class MdxGhidra extends HeadlessScript {
         }
         return written;
     }
+    /**
+     * `jsr d16(An)` / `jmp d16(An)` with An fixed by register context: Ghidra's
+     * 68000 semantics load a pointer from An+d16 and call through it, so a
+     * table of `jmp abs.l` stubs reads as calls to 0x4EF9xxxx. Resolve each
+     * site to An+d16, make a `jmp abs.l` stub there a thunk of its target, and
+     * override the call so pseudocode names the routine. Odd or non-code
+     * targets are reported, never turned into functions.
+     */
+    private JsonObject baseRegisterCalls() throws Exception {
+        var out = new JsonObject();
+        int resolved = 0, thunks = 0;
+        var rejected = new JsonArray();
+        var executable = currentProgram.getMemory().getExecuteSet();
+        var context = currentProgram.getProgramContext();
+        var refs = currentProgram.getReferenceManager();
+        var sites = new ArrayList<Instruction>();
+        for (var it = currentProgram.getListing().getInstructions(true); it.hasNext();) {
+            var ins = it.next();
+            var m = ins.getMnemonicString().toLowerCase();
+            if ((m.equals("jsr") || m.equals("jmp")) && ins.getFlowType().isComputed()) sites.add(ins);
+        }
+        for (var ins : sites) {
+            monitor.checkCancelled();
+            ghidra.program.model.lang.Register base = null;
+            long disp = 0;
+            boolean simple = true;
+            for (var o : ins.getOpObjects(0)) {
+                if (o instanceof ghidra.program.model.lang.Register r && base == null) base = r;
+                else if (o instanceof ghidra.program.model.scalar.Scalar sc) disp = sc.getSignedValue();
+                else simple = false;
+            }
+            // Only (An) and (d16,An); indexed forms vary at run time.
+            if (!simple || base == null || !base.getName().matches("(?i)A[0-6]")) continue;
+            var value = context.getRegisterValue(base, ins.getAddress());
+            if (value == null || !value.hasValue()) continue;
+            var target = toAddr((value.getUnsignedValue().longValue() + disp) & 0xFFFFFFL);
+            boolean call = ins.getFlowType().isCall();
+            String why = null;
+            // A stub with a bad target still names the stub: that is what the CPU calls.
+            boolean overrideAnyway = false;
+            Address callee = target;
+            if ((target.getOffset() & 1) != 0 || !executable.contains(target)) {
+                why = "target is odd or outside code";
+            } else {
+                var stubTarget = jmpAbsLong(target);
+                if (stubTarget != null) {
+                    if ((stubTarget.getOffset() & 1) != 0 || !executable.contains(stubTarget)) {
+                        why = "jmp stub at " + hex(target) + " leads to odd or non-code " + hex(stubTarget);
+                        overrideAnyway = true;
+                    }
+                    else if (makeThunk(target, stubTarget)) thunks++;
+                } else if (call) {
+                    new DisassembleCommand(target, executable, true).applyTo(currentProgram, monitor);
+                    if (getFunctionAt(target) == null && createFunction(target, null) == null) why = "no function could be created at " + hex(target);
+                }
+            }
+            if (why != null) {
+                if (rejected.size() < 256) {
+                    var r = new JsonObject();
+                    r.addProperty("from", hex(ins.getAddress()));
+                    r.addProperty("target", hex(target));
+                    r.addProperty("reason", why);
+                    rejected.add(r);
+                }
+                if (!overrideAnyway) continue;
+            }
+            var type = call ? RefType.CALL_OVERRIDE_UNCONDITIONAL : RefType.JUMP_OVERRIDE_UNCONDITIONAL;
+            for (var r : ins.getOperandReferences(0)) refs.delete(r);
+            var ref = refs.addMemoryReference(ins.getAddress(), callee, type, SourceType.USER_DEFINED, 0);
+            refs.setPrimary(ref, true);
+            if (why == null) resolved++;
+        }
+        out.addProperty("resolved", resolved);
+        out.addProperty("thunks_created", thunks);
+        out.add("rejected", rejected);
+        return out;
+    }
+    /** Target of a `jmp abs.l` (4EF9 xxxxxxxx) at a, or null. */
+    private Address jmpAbsLong(Address a) {
+        try {
+            var mem = currentProgram.getMemory();
+            if ((mem.getShort(a) & 0xFFFF) != 0x4EF9) return null;
+            return toAddr(mem.getInt(a.add(2)) & 0xFFFFFFL);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+    /** Makes the stub at `stub` a thunk of the function at `target`; true if newly made. */
+    private boolean makeThunk(Address stub, Address target) throws Exception {
+        var existing = getFunctionAt(stub);
+        if (existing != null && existing.isThunk()) return false;
+        var code = currentProgram.getMemory().getExecuteSet();
+        if (getInstructionAt(stub) == null) {
+            clearListing(stub, stub.add(5));
+            new DisassembleCommand(stub, code, false).applyTo(currentProgram, monitor);
+        }
+        new DisassembleCommand(target, code, true).applyTo(currentProgram, monitor);
+        var callee = getFunctionAt(target);
+        if (callee == null) callee = createFunction(target, null);
+        if (callee == null) throw new IOException("no function at thunk target " + hex(target));
+        if (existing != null) {
+            existing.setThunkedFunction(callee);
+        } else {
+            var cmd = new ghidra.app.cmd.function.CreateThunkFunctionCmd(stub, new AddressSet(stub, stub.add(5)), target);
+            if (!cmd.applyTo(currentProgram, monitor)) throw new IOException("thunk at " + hex(stub) + ": " + cmd.getStatusMsg());
+        }
+        return true;
+    }
     /** Snapshot RAM is not a string table: drop data analysis invented there. */
     private int clearSnapshotData() throws Exception {
         int cleared = 0;
@@ -229,6 +339,7 @@ public class MdxGhidra extends HeadlessScript {
         index.addProperty("snapshot_data_cleared", clearSnapshotData());
         index.addProperty("analysis_timed_out", analysisTimeoutOccurred());
         index.addProperty("jump_table_overrides", jumpTables());
+        index.add("base_register_calls", baseRegisterCalls());
         var functions = new JsonArray();
         for (var f : currentProgram.getFunctionManager().getFunctions(true)) {
             monitor.checkCancelled();
@@ -280,6 +391,17 @@ public class MdxGhidra extends HeadlessScript {
         index.add("warnings", warnings);
         write("index", index);
     }
+    /** Typed data for a named global, so wider accesses resolve to its name. */
+    private void sized(Address a, JsonObject s) throws Exception {
+        if (!s.has("size") || s.get("size").isJsonNull()) return;
+        int size = s.get("size").getAsInt();
+        clearListing(a, a.add(size - 1));
+        switch (size) {
+            case 1: createByte(a); break;
+            case 2: createWord(a); break;
+            default: createDWord(a);
+        }
+    }
     private void annotate() throws Exception {
         int transaction = currentProgram.startTransaction("mdx annotations");
         boolean committed = false;
@@ -298,19 +420,43 @@ public class MdxGhidra extends HeadlessScript {
                     p.has("generated") ? SourceType.ANALYSIS : SourceType.USER_DEFINED);
                 if (p.has("comment")) f.setComment(p.get("comment").getAsString());
             }
+            if (request.has("labels")) {
+                for (var item : request.getAsJsonArray("labels")) {
+                    var l = item.getAsJsonObject();
+                    var a = toAddr(l.get("address").getAsLong());
+                    createLabel(a, l.get("name").getAsString(), true, SourceType.USER_DEFINED);
+                    sized(a, l);
+                    if (l.has("comment")) setEOLComment(a, l.get("comment").getAsString());
+                }
+            }
             committed = true;
         } finally { currentProgram.endTransaction(transaction, committed); }
         exportIndex();
     }
+    /** Decompiles each of request.addrs in one decompiler session. */
     private void decompile() throws Exception {
+        var results = new JsonArray();
+        var decompiler = new DecompInterface();
+        try {
+            if (!decompiler.openProgram(currentProgram)) throw new IOException(decompiler.getLastMessage());
+            for (var item : request.getAsJsonArray("addrs")) {
+                monitor.checkCancelled();
+                results.add(decompileOne(decompiler, toAddr(item.getAsLong())));
+            }
+        } finally {
+            decompiler.dispose();
+        }
+        var out = new JsonObject();
+        out.add("results", results);
+        write("query_result", out);
+    }
+    private JsonObject decompileOne(DecompInterface decompiler, Address a) throws Exception {
         var result = new JsonObject();
-        var a = toAddr(request.get("addr").getAsLong());
         var f = getFunctionContaining(a);
         if (f == null) {
             result.addProperty("status", "function_not_found");
             result.addProperty("diagnostic", "No analysed function contains this address; seed it with entries, symbols or runtime evidence.");
-            write("query_result", result);
-            return;
+            return result;
         }
         result.add("function", function(f));
         // The instructions are the ground truth the pseudocode must be checked against.
@@ -326,20 +472,14 @@ public class MdxGhidra extends HeadlessScript {
         }
         result.add("listing", listing);
         result.addProperty("listing_truncated", truncated);
-        var decompiler = new DecompInterface();
-        try {
-            if (!decompiler.openProgram(currentProgram)) throw new IOException(decompiler.getLastMessage());
-            var output = decompiler.decompileFunction(f, request.get("decompile_timeout").getAsInt(), monitor);
-            result.addProperty("status", output.decompileCompleted() ? "complete" : output.isTimedOut() ? "timeout" : "decompile_failed");
-            result.addProperty("diagnostic", output.getErrorMessage());
-            if (output.decompileCompleted()) {
-                result.addProperty("pseudocode", output.getDecompiledFunction().getC());
-                result.getAsJsonObject("function").addProperty("signature", output.getDecompiledFunction().getSignature());
-            }
-        } finally {
-            decompiler.dispose();
+        var output = decompiler.decompileFunction(f, request.get("decompile_timeout").getAsInt(), monitor);
+        result.addProperty("status", output.decompileCompleted() ? "complete" : output.isTimedOut() ? "timeout" : "decompile_failed");
+        result.addProperty("diagnostic", output.getErrorMessage());
+        if (output.decompileCompleted()) {
+            result.addProperty("pseudocode", output.getDecompiledFunction().getC());
+            result.getAsJsonObject("function").addProperty("signature", output.getDecompiledFunction().getSignature());
         }
-        write("query_result", result);
+        return result;
     }
     @Override public void run() throws Exception {
         try (var in = Files.newBufferedReader(Path.of(getScriptArgs()[0]), StandardCharsets.UTF_8)) {
@@ -349,6 +489,6 @@ public class MdxGhidra extends HeadlessScript {
         if (mode.equals("setup")) { setup(); return; }
         if (mode.equals("annotate")) { annotate(); return; }
         if (mode.equals("export")) exportIndex();
-        if (request.has("addr")) decompile();
+        if (request.has("addrs")) decompile();
     }
 }

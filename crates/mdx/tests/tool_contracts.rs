@@ -219,6 +219,24 @@ fn discovery_is_side_effect_free_and_all_cli_errors_are_single_json_documents() 
     }
 }
 
+/// A bare CLI address is hex, as in every other address argument: `--from 200`
+/// used to read as decimal 200 (0xC8) and `--from 1339E` was rejected.
+#[test]
+fn cli_addresses_are_hex_with_or_without_prefix() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("jmp.md");
+    rom(&path, &[0x4E, 0xF9, 0x00, 0x00, 0x02, 0x00]);
+    for from in ["200", "0x200"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_mdx"))
+            .args(["disasm", "--rom", path.to_str().unwrap(), "--from", from, "--count", "1"])
+            .output()
+            .unwrap();
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["data"]["from"], "0x000200", "--from {from}");
+        assert_eq!(report["data"]["instructions"][0]["text"], "jmp 0x200");
+    }
+}
+
 #[test]
 fn budgets_count_exceptions_and_cancellation_timeout_and_missing_stops_are_explicit() {
     let root = tempfile::tempdir().unwrap();
@@ -418,6 +436,7 @@ fn probes_preserve_instruction_boundary_state_and_report_every_record_cap() {
     assert_eq!(record["width_bits"], 16);
     assert_eq!(record["writer"], "m68000");
     assert_eq!(record["a"][7], 0xFF1000);
+    assert_eq!(record["in_interrupt"], false);
     let trace = call(
         "trace",
         json!({"rom":path,"instructions":8,"max_records":2}),

@@ -174,6 +174,13 @@ macro_rules! with_input {
             #[arg(long = "register")]
             #[serde(default)]
             pub registers: Vec<String>,
+            /// Hex RAM addresses ADDR or ADDR:LEN (LEN hex, default 1) that interrupt
+            /// handlers or hardware change, e.g. FFE4EE:4 for a counter the VBlank
+            /// handler decrements. The decompiler then keeps every read of them instead
+            /// of folding a polling loop into an infinite one.
+            #[arg(long = "volatile")]
+            #[serde(default)]
+            pub volatile: Vec<String>,
             /// z80: ROM file offset (hex) of the driver bytes to analyse.
             #[arg(long)]
             #[serde(default)]
@@ -218,6 +225,7 @@ macro_rules! with_input {
                     entries: self.entries.clone(),
                     banks: self.banks.clone(),
                     registers: self.registers.clone(),
+                    volatile: self.volatile.clone(),
                     z80_rom_offset: self.z80_rom_offset.clone(),
                     z80_origin: self.z80_origin.clone(),
                     z80_size: self.z80_size,
@@ -242,6 +250,7 @@ struct Input {
     entries: Vec<String>,
     banks: Vec<String>,
     registers: Vec<String>,
+    volatile: Vec<String>,
     z80_rom_offset: Option<String>,
     z80_origin: Option<String>,
     z80_size: Option<u32>,
@@ -720,6 +729,9 @@ pub struct Mapping {
     entries: Vec<u32>,
     /// Register context applied over all code.
     registers: BTreeMap<String, u32>,
+    /// Folded [start, end) ranges marked volatile by request.
+    #[serde(default)]
+    volatile: Vec<(u32, u32)>,
     blocks: Vec<Block>,
 }
 
@@ -1090,6 +1102,7 @@ fn import(input: &Input, ctx: &Context) -> Result<Import> {
                 code_ranges: code,
                 entries: vec![],
                 registers: BTreeMap::new(),
+                volatile: vec![],
                 blocks,
             };
             (image, mapping)
@@ -1271,6 +1284,7 @@ fn import(input: &Input, ctx: &Context) -> Result<Import> {
                 code_ranges: code,
                 entries: vec![],
                 registers: BTreeMap::new(),
+                volatile: vec![],
                 blocks,
             };
             (image, mapping)
@@ -1291,6 +1305,7 @@ fn import(input: &Input, ctx: &Context) -> Result<Import> {
         }
         mapping.registers.insert(name, hex(value)?);
     }
+    mark_volatile(&mut mapping, &input.volatile)?;
     provenance["evidence"] = ev.summary();
     Ok(Import {
         subject,
@@ -1305,6 +1320,74 @@ fn import(input: &Input, ctx: &Context) -> Result<Import> {
         provenance,
         warnings,
     })
+}
+
+/// Ghidra's decompiler treats memory as volatile per block, so split each
+/// block (and every alias block mapped onto it) at the requested ranges and
+/// mark the middle pieces volatile.
+fn mark_volatile(mapping: &mut Mapping, specs: &[String]) -> Result<()> {
+    let cpu = mapping.cpu;
+    let mut ranges = Vec::new();
+    for spec in specs {
+        let (a, len) = match spec.split_once(':') {
+            Some((a, l)) => (a, hex(l)?),
+            None => (spec.as_str(), 1),
+        };
+        let start = cpu.fold(hex(a)?);
+        if !(1..=0x1_0000).contains(&len) {
+            return Err(invalid(format!("volatile {spec:?}: length must be 1..=0x10000")));
+        }
+        // Each byte must be RAM or hardware that some block models.
+        let target = |b: &Block| cpu.fold(b.mapped_to.unwrap_or(b.start));
+        let inside = mapping.blocks.iter().any(|b| target(b) <= start && start as u64 + len as u64 <= target(b) as u64 + b.size as u64);
+        if !inside {
+            return Err(invalid(format!("volatile {spec:?} is not inside one RAM or hardware block (ROM is never volatile)")));
+        }
+        ranges.push((start, start + len));
+    }
+    let ranges = merge(ranges);
+    if ranges.is_empty() {
+        return Ok(());
+    }
+    let mut blocks = Vec::new();
+    for b in std::mem::take(&mut mapping.blocks) {
+        let base = cpu.fold(b.mapped_to.unwrap_or(b.start));
+        // Cut points as offsets into this block.
+        let mut cuts = vec![0, b.size];
+        for &(lo, hi) in &ranges {
+            for edge in [lo, hi] {
+                if edge > base && edge - base < b.size {
+                    cuts.push(edge - base);
+                }
+            }
+        }
+        cuts.sort_unstable();
+        cuts.dedup();
+        if b.is_volatile {
+            blocks.push(b);
+            continue;
+        }
+        for (i, w) in cuts.windows(2).enumerate() {
+            let (off, size) = (w[0], w[1] - w[0]);
+            let mut piece = b.clone();
+            piece.start = b.start + off;
+            piece.size = size;
+            piece.mapped_to = b.mapped_to.map(|m| m + off);
+            piece.bytes = b.bytes.as_ref().map(|bytes| bytes[off as usize..(off + size) as usize].to_vec());
+            piece.is_volatile = contains(&ranges, base + off);
+            if i > 0 {
+                piece.name = format!("{}_{:X}", b.name, piece.start);
+                piece.comment = None;
+            }
+            if piece.is_volatile && !b.is_volatile {
+                piece.comment = Some("volatile by request".into());
+            }
+            blocks.push(piece);
+        }
+    }
+    mapping.blocks = blocks;
+    mapping.volatile = ranges;
+    Ok(())
 }
 
 /// Bytes at `addr..addr+len` of the analysed memory (image or a block with bytes).
@@ -1448,11 +1531,12 @@ fn budget(input: &Input) -> Result<Instant> {
             || !input.entries.is_empty()
             || !input.banks.is_empty()
             || !input.registers.is_empty()
+            || !input.volatile.is_empty()
             || !input.symbols.is_empty()
             || input.z80_rom_offset.is_some()
             || input.reanalyze)
     {
-        return Err(invalid("import options (from_state, evidence, ranges, entries, banks, registers, symbols, z80_*, reanalyze) require rom, not an analysis handle"));
+        return Err(invalid("import options (from_state, evidence, ranges, entries, banks, registers, volatile, symbols, z80_*, reanalyze) require rom, not an analysis handle"));
     }
     Ok(Instant::now() + Duration::from_secs(input.timeout))
 }
@@ -2164,6 +2248,29 @@ mod tests {
         assert_eq!(hex("$1A2C").unwrap(), 0x1A2C);
         assert_eq!(hex("0x00FF0000").unwrap(), 0xFF_0000);
         assert!(hex("zz").is_err());
+    }
+
+    /// A polled counter is volatile in WRAM and in its absolute-short alias;
+    /// the rest of RAM stays ordinary so stores still fold.
+    #[test]
+    fn volatile_ranges_split_ram_and_its_alias() {
+        let (dir, ctx) = context();
+        let mut inp = input(&rom(dir.path()));
+        inp.volatile = vec!["FFFFE4EE:4".into(), "FFE472".into()];
+        let imp = import(&inp, &ctx).unwrap();
+        assert_eq!(imp.mapping.volatile, vec![(0xFF_E472, 0xFF_E473), (0xFF_E4EE, 0xFF_E4F2)]);
+        let vol: Vec<(&str, u32, u32)> = imp.mapping.blocks.iter().filter(|b| b.is_volatile && b.name.starts_with("WRAM"))
+            .map(|b| (b.name.as_str(), b.start, b.size)).collect();
+        assert_eq!(vol, [("WRAM_FFE472", 0xFF_E472, 1), ("WRAM_FFE4EE", 0xFF_E4EE, 4),
+            ("WRAM_ABS_W_FFFFE472", 0xFFFF_E472, 1), ("WRAM_ABS_W_FFFFE4EE", 0xFFFF_E4EE, 4)]);
+        let alias = imp.mapping.blocks.iter().find(|b| b.name == "WRAM_ABS_W_FFFFE4EE").unwrap();
+        assert_eq!(alias.mapped_to, Some(0xFF_E4EE));
+        let total: u32 = imp.mapping.blocks.iter().filter(|b| b.name.starts_with("WRAM_ABS_W")).map(|b| b.size).sum();
+        assert_eq!(total, 0x1_0000);
+        for bad in ["200", "FFE4EE:0", "FFFFF0:20"] {
+            inp.volatile = vec![bad.into()];
+            assert!(import(&inp, &ctx).is_err(), "{bad}");
+        }
     }
 
     #[test]

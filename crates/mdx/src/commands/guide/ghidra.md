@@ -38,8 +38,12 @@ Base registers: compiled games often keep an address register constant (King's
 Bounty holds A5=0x312: `jsr N(a5)` calls a jump table and globals sit at
 negative A5 offsets). 68000 trace evidence reports register_hints (a register
 holding one nonzero value in at least 90% of steps). Confirm it in the
-listing, then pass register A5=312: Ghidra then resolves those calls and
-globals, which turns unaff_A5 arithmetic into named work-RAM addresses.
+listing, then pass register A5=312: globals at A5 offsets become work-RAM
+addresses, and each `jsr d16(An)`/`jmp d16(An)` is resolved to An+d16. A
+`jmp abs.l` stub there becomes a thunk of its target, so pseudocode reads
+`Random(0x5a)` rather than `(*_DAT_00000312)(0x5a)`. base_register_calls
+counts resolved sites and lists rejected ones: odd or non-code targets, which
+are table data rather than routines and never become functions.
 
 Polled RAM: work RAM is ordinary memory to Ghidra, so a wait loop on a
 counter that the VBlank handler changes (`move.l d0,FFE4EE` then

@@ -1809,7 +1809,8 @@ fn summary(a: &Analysis) -> Value {
     json!({"analysis":a.path,"cpu":m.cpu,"rom_sha256":m.subject.sha256,"state_sha256":m.state_sha256,"ghidra_version":m.installation.version,
         "language":m.language,"project":m.project_dir.join("project.gpr"),"function_count":a.index["functions"].as_array().map_or(0,Vec::len),
         "instructions":a.index["instructions"],"mapping":m.mapping,"provenance":m.provenance,"evidence_coverage":a.index["evidence"],
-        "revision":m.revision,"references_truncated":a.index["references_truncated"]})
+        "revision":m.revision,"references_truncated":a.index["references_truncated"],
+        "base_register_calls":a.index["base_register_calls"]})
 }
 
 /// Wraps a result with the analysis' identity, coverage and standing limitations.
@@ -1825,6 +1826,13 @@ fn envelope(tool: &str, a: &Analysis, data: Value, partial: Option<String>) -> E
         conditions.push(format!(
             "runtime evidence: {} executed PCs, {} inside analysed functions, {} not disassembled",
             ev["executed_pcs"], ev["in_functions"], ev["not_disassembled"]
+        ));
+    }
+    let base = &a.index["base_register_calls"];
+    if base["resolved"].as_u64().unwrap_or(0) > 0 || base["rejected"].as_array().is_some_and(|r| !r.is_empty()) {
+        conditions.push(format!(
+            "base-register calls (jsr d16(An) with register context): {} resolved, {} rejected (see base_register_calls)",
+            base["resolved"], base["rejected"].as_array().map_or(0, Vec::len)
         ));
     }
     let mut coverage = Coverage::complete(conditions);
@@ -2204,6 +2212,7 @@ pub fn annotate(args: AnnotateArgs, ctx: &Context) -> Result<Envelope<Value>> {
     }
     // Annotation runs without the evidence request; keep the import's override count.
     fresh["jump_table_overrides"] = a.index["jump_table_overrides"].clone();
+    fresh["base_register_calls"] = a.index["base_register_calls"].clone();
     save_json(&index, &fresh)?;
     a.index = fresh;
     a.manifest.revision += 1;

@@ -175,3 +175,50 @@ fn live_ghidra_volatile_keeps_polled_reads() {
     let bad = call("ghidra.annotate", json!({"analysis":analysis,"labels":[{"addr":"800000","name":"nowhere"}]}), root);
     assert_eq!(bad["error"]["code"], "invalid_arguments", "{bad}");
 }
+
+/// King's Bounty calls library routines with `jsr d16(a5)` into a table of
+/// `jmp abs.l` stubs. Ghidra loads a pointer from A5+d16 instead, which made
+/// every callee 0x4EF9xxxx. With A5 known, the call names the stub's target;
+/// a stub to an odd address is reported and not followed.
+#[test]
+fn live_ghidra_resolves_base_register_thunks() {
+    let dir = workspace();
+    let root = dir.path();
+    if call("ghidra.doctor", json!({}), root)["error"]["code"] == "ghidra_unavailable" {
+        eprintln!("skipping: Ghidra not installed");
+        return;
+    }
+    let mut b = vec![0u8; 0x400];
+    b[0..4].copy_from_slice(&0x00FF_1000u32.to_be_bytes());
+    b[4..8].copy_from_slice(&0x200u32.to_be_bytes());
+    b[0x100..0x110].copy_from_slice(b"SEGA MEGA DRIVE ");
+    let code: &[(usize, &[u8])] = &[
+        // jsr 0(a5); jsr 6(a5); bra.s *
+        (0x200, &[0x4E, 0xAD, 0, 0, 0x4E, 0xAD, 0, 6, 0x60, 0xFE]),
+        // moveq #1,d0; rts
+        (0x240, &[0x70, 0x01, 0x4E, 0x75]),
+        // jmp $240.l; jmp $241.l (odd: data, never a routine)
+        (0x300, &[0x4E, 0xF9, 0, 0, 0x02, 0x40, 0x4E, 0xF9, 0, 0, 0x02, 0x41]),
+    ];
+    for (at, bytes) in code {
+        b[*at..*at + bytes.len()].copy_from_slice(bytes);
+    }
+    fs::write(root.join("thunk.md"), b).unwrap();
+    fs::write(root.join("thunk.sym"), "240 ReturnOne\n").unwrap();
+    let out = call("ghidra.decompile", json!({"rom":"thunk.md","addr":"200","registers":["A5=300"],"symbols":["thunk.sym"]}), root);
+    assert_eq!(out["ok"], true, "{out}");
+    let data = &out["data"];
+    let text = data["pseudocode"].as_str().unwrap();
+    assert!(text.contains("ReturnOne()"), "{text}");
+    // The bad stub is still the call's destination, just not a function.
+    assert!(!text.contains("(*") && text.contains("0x00000306"), "{text}");
+    let base = &data["base_register_calls"];
+    assert_eq!(base["resolved"], 1, "{base}");
+    assert_eq!(base["rejected"][0]["from"], "0x00000204", "{base}");
+    assert_eq!(base["rejected"][0]["target"], "0x00000306", "{base}");
+    let callees = data["callees"]["items"].as_array().unwrap();
+    assert!(callees.iter().any(|c| c["to"] == "0x00000300" && c["type"] == "CALL_OVERRIDE_UNCONDITIONAL"), "{callees:?}");
+    let functions = call("ghidra.functions", json!({"analysis":data["analysis"]}), root);
+    let entries: Vec<&str> = functions["data"]["functions"]["items"].as_array().unwrap().iter().map(|f| f["entry"].as_str().unwrap()).collect();
+    assert!(!entries.contains(&"0x00000241") && !entries.contains(&"0x00000306"), "{entries:?}");
+}

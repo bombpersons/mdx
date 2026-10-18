@@ -41,6 +41,13 @@ holding one nonzero value in at least 90% of steps). Confirm it in the
 listing, then pass register A5=312: Ghidra then resolves those calls and
 globals, which turns unaff_A5 arithmetic into named work-RAM addresses.
 
+Polled RAM: work RAM is ordinary memory to Ghidra, so a wait loop on a
+counter that the VBlank handler changes (`move.l d0,FFE4EE` then
+`tst.l FFE4EE; bne`) decompiles as an infinite loop. Pass volatile
+ADDR[:LEN] (hex, e.g. FFE4EE:4) for such addresses; watch shows which PCs
+write them. The read then survives in pseudocode. Hardware ports are
+already volatile.
+
 RAM-resident code: give from_state (a state captured after the code was
 copied); work RAM is imported from it, and RAM PCs from evidence, extra
 ranges (LO-HI) and RAM vector targets become code. Without a state, RAM PCs

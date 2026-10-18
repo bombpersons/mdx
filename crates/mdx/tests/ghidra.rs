@@ -134,3 +134,30 @@ fn live_ghidra_round_trip_uses_runtime_evidence() {
     let seeded = call("ghidra.functions", json!({"rom":rom,"symbols":[symbols],"filter":"ReturnOne"}), root);
     assert_eq!(seeded["data"]["functions"]["items"][0]["entry"], "0x00000240", "{seeded}");
 }
+
+/// `Delay`-style poll: store a count, then spin until an interrupt clears it.
+/// Without volatile the decompiler folds the reload into the stored value and
+/// prints an infinite loop; with it the read survives.
+#[test]
+fn live_ghidra_volatile_keeps_polled_reads() {
+    let dir = workspace();
+    let root = dir.path();
+    if call("ghidra.doctor", json!({}), root)["error"]["code"] == "ghidra_unavailable" {
+        eprintln!("skipping: Ghidra not installed");
+        return;
+    }
+    let mut b = vec![0u8; 0x400];
+    b[0..4].copy_from_slice(&0x00FF_1000u32.to_be_bytes());
+    b[4..8].copy_from_slice(&0x200u32.to_be_bytes());
+    b[0x100..0x110].copy_from_slice(b"SEGA MEGA DRIVE ");
+    // move.l #5,($FFE4EE).l; loop: tst.l ($FFE4EE).l; bne.s loop; rts
+    let code = [0x23, 0xFC, 0, 0, 0, 5, 0, 0xFF, 0xE4, 0xEE, 0x4A, 0xB9, 0, 0xFF, 0xE4, 0xEE, 0x66, 0xF8, 0x4E, 0x75];
+    b[0x200..0x200 + code.len()].copy_from_slice(&code);
+    fs::write(root.join("poll.md"), b).unwrap();
+    let plain = call("ghidra.decompile", json!({"rom":"poll.md","addr":"200"}), root);
+    let marked = call("ghidra.decompile", json!({"rom":"poll.md","addr":"200","volatile":["FFE4EE:4"]}), root);
+    let plain = plain["data"]["pseudocode"].as_str().unwrap().to_string();
+    let marked = marked["data"]["pseudocode"].as_str().unwrap().to_string();
+    assert!(marked.contains("Ram00ffe4ee = 5;") && marked.contains("!= 0);"), "plain:\n{plain}\nvolatile:\n{marked}");
+    assert!(!marked.contains("while( true )"), "{marked}");
+}

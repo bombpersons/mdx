@@ -27,6 +27,9 @@ pub struct BootData {
     pub observations: BTreeMap<String, ObservationCount>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_replay: Option<InputReplayData>,
+    /// Per-frame work RAM samples (`samples`), for trajectory tests.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub samples: Option<SamplesData>,
     /// Console region in effect (version register).
     pub console_region: mdcore::cart_hw::ConsoleRegion,
     /// 68000 writes into the sound side, when `sound_commands` was requested.
@@ -72,6 +75,16 @@ pub struct BootData {
     /// executing. Complete counts/omissions are in observations.unmapped_accesses.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unmapped_access_samples: Vec<mdcore::observe::UnmappedAccess>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct SamplesData {
+    /// CSV `run_frame,frame,<label>...`: row N is work RAM when run frame N
+    /// begins (start of vertical blank, before that frame's input); row 0 is
+    /// the starting state.
+    pub artifact: crate::artifacts::Artifact,
+    pub rows: usize,
+    pub columns: usize,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -298,6 +311,7 @@ pub fn run_controlled(
         super::state::RegionChoice::Auto,
         None,
         false,
+        &[],
         context,
     )
 }
@@ -331,6 +345,7 @@ pub fn run_resumable(
     region: super::state::RegionChoice,
     from_state: Option<&str>,
     save_state: bool,
+    samples: &[super::samples::SampleSpec],
     context: &crate::context::Context,
 ) -> Result<(Envelope<BootData>, i32), Failure> {
     if instructions > 100_000_000 || trace > 4096 || frames.is_some_and(|v| v > 100_000) {
@@ -379,6 +394,7 @@ pub fn run_resumable(
                 .ok_or_else(|| crate::artifacts::failure("limit_exceeded", "frame target overflow"))
         })
         .transpose()?;
+    let mut sampler = super::samples::Sampler::new(samples, frames)?;
     system.observation_limit = 512;
     // `--force-branch 0xADDR=take|skip` walks a cartridge down a path its own
     // condition codes would not choose, which is how the alternate side of a
@@ -432,6 +448,11 @@ pub fn run_resumable(
     let mut tail_observed = 0u64;
 
     for i in 0..instructions {
+        // Before the frame target check and this frame's input events, so
+        // each row is the state as the frame begins.
+        if let Some(sampler) = sampler.as_mut() {
+            sampler.observe(system.vdp.frame, starting_frame, &system.wram);
+        }
         if let Some(reason) = context.stop_reason() {
             termination = reason;
             break;
@@ -534,6 +555,9 @@ pub fn run_resumable(
     if let Some(slot) = pending_slot {
         first_addresses[slot].next_pc = format!("0x{:08X}", system.cpu.pc);
     }
+    if let Some(sampler) = sampler.as_mut() {
+        sampler.observe(system.vdp.frame, starting_frame, &system.wram);
+    }
     // A target reached by the final budgeted step is still a successful stop.
     // Do not overwrite an explicit timeout/cancellation reason.
     if termination == "instruction_budget" {
@@ -567,6 +591,14 @@ pub fn run_resumable(
             .map_err(|e| crate::artifacts::failure("screenshot_failed", e.to_string()))?,
     )?;
     let screenshot_path = screenshot.path.clone();
+    let samples = match sampler {
+        Some(sampler) => {
+            let (rows, columns) = (sampler.rows, sampler.columns());
+            let artifact = crate::artifacts::named(directory, "samples", "csv", sampler.into_csv().as_bytes())?;
+            Some(SamplesData { artifact, rows, columns })
+        }
+        None => None,
+    };
 
     let mut memory_artifacts = BTreeMap::new();
     let mut memories = vec![
@@ -661,6 +693,7 @@ pub fn run_resumable(
         snapshot_artifact: None,
         termination: termination.into(),
         observations,
+        samples,
         input_replay: Some(InputReplayData {
             source_sha256: replay.source_sha256,
             events_applied: next_input,

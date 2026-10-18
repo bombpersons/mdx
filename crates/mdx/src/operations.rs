@@ -212,6 +212,13 @@ pub struct BootArgs {
     #[serde(default)]
     #[schemars(length(max = 1000))]
     pub pokes: Vec<commands::input::Poke>,
+    /// Work RAM values to record at every frame boundary into a CSV artifact
+    /// (data.samples), for trajectory tests of a native port; needs frames.
+    /// Row N is memory as run frame N begins, before its input; row 0 is the
+    /// starting state.
+    #[serde(default)]
+    #[schemars(length(max = 64))]
+    pub samples: Vec<commands::samples::SampleSpec>,
     /// Log 68000 writes into Z80 RAM, the bank register, BUSREQ and RESET to a
     /// JSONL artifact with a per-address summary; `{}` uses the defaults.
     #[serde(default)]
@@ -472,7 +479,9 @@ fn descriptor<I: JsonSchema, O: JsonSchema>(name: &str, description: &str) -> De
 
 pub fn descriptors() -> Vec<Descriptor> {
     vec![
-        descriptor::<commands::template::CreateArgs, commands::template::CreateData>("template.create", "Create a standalone native Rust/Bevy game project with a Mega Drive viewport, controllers and feature-gated screenshot/input MCP. Pass an absolute destination in the calling agent's workspace; existing nonempty destinations are refused."),
+        descriptor::<commands::template::CreateArgs, commands::template::CreateData>("template.create", "Create a Rust/Bevy port workspace (md-bevy template crate, engine with sandbox, game, importers, docs) at an absolute destination in the calling agent's workspace, e.g. the ROM's folder; existing files are kept, colliding paths refused. Read guide topic port first."),
+        descriptor::<commands::template::UpdateArgs, commands::template::UpdateData>("template.update", "Bring a template.create project up to date: replaces unedited md-bevy files, writes <file>.mdx-new beside edited ones, copies changed seeded files under .mdx/template-update. dry_run reports only."),
+        descriptor::<commands::guide::GuideArgs, commands::guide::GuideData>("guide", "Built-in workflow guidance by topic (overview, port). Read port before starting a native port."),
         descriptor::<ImportArgs, ImportData>("artifact.import", "Import a local regular file into the immutable content-addressed store; return its reusable sha256 ID."),
         descriptor::<ReadArtifactArgs, ArtifactPage>("artifact.read", "Read a bounded byte page from a digest-verified artifact as hex or exact UTF-8; reports the next offset."),
         descriptor::<ViewArgs, ArtifactView>("artifact.view", "Inspect a JSON Pointer or page structured JSON/JSONL records from a verified artifact; useful for large boot responses and traces."),
@@ -637,6 +646,9 @@ fn store_references(name: &str, data: &Value, context: &Context) -> Result<(), F
             }
             if name == "boot" {
                 references.push(&data["display"]["screenshot_artifact"]);
+                if data["samples"].is_object() {
+                    references.push(&data["samples"]["artifact"]);
+                }
             }
             if name == "render" {
                 references.push(&data["screenshot_artifact"]);
@@ -694,6 +706,8 @@ fn execute_inner(
     context.check()?;
     Ok(match name {
         "template.create" => erase(commands::template::create(parse(arguments)?, context)?),
+        "template.update" => erase(commands::template::update(parse(arguments)?, context)?),
+        "guide" => erase(commands::guide::run(parse(arguments)?)?),
         "artifact.import" => {
             let args: ImportArgs = parse(arguments)?;
             let path = crate::artifacts::resolve(&context.store, &args.path)?;
@@ -964,6 +978,7 @@ fn execute_inner(
                     args.region,
                     args.from_state.as_deref(),
                     args.save_state,
+                    &args.samples,
                     &context,
                 )
                 .map(|(mut envelope, code)| {

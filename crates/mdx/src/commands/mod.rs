@@ -11,8 +11,10 @@ pub mod probe;
 pub mod ram;
 pub mod render;
 pub mod schema;
+pub mod samples;
 pub mod sound_log;
 pub mod template;
+pub mod guide;
 pub mod vgm;
 
 pub mod audio;

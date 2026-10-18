@@ -23,8 +23,11 @@ What the import sets up:
   (SSF2-style mappers) need bank SLOT=PAGE or a from_state captured while the
   code of interest was mapped.
 
-Runtime evidence is the differentiator. Pass evidence: trace (or watch)
-records artifacts and boot results. Every executed PC is disassembled;
+Runtime evidence is the differentiator. Best is trace with coverage:true
+(and max_records 0): it records every distinct PC and control transfer of the
+whole bounded run, so a long run through gameplay costs one small artifact;
+pass its coverage_artifact. Plain trace/watch records artifacts and boot
+results also work, but per-step records are mostly wait loops. Every executed PC is disassembled;
 observed targets of indirect `jmp`/`jsr` (e.g. `jmp (pc,d0.w)` tables, which
 Ghidra often misses) become references, and two or more targets from one
 jump become a decompiler switch. evidence_coverage then says how many

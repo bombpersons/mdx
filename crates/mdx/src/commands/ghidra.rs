@@ -148,7 +148,8 @@ macro_rules! with_input {
             #[arg(long)]
             #[serde(default)]
             pub from_state: Option<String>,
-            /// Runtime evidence: trace/watch records artifacts (JSONL) or boot result
+            /// Runtime evidence: trace coverage_artifact (best: whole-run distinct PCs
+            /// and transfers), trace/watch records artifacts (JSONL) or boot result
             /// JSON, as IDs or paths. Executed PCs seed code; observed indirect
             /// jump/call targets become references and switch tables.
             #[arg(long)]
@@ -881,8 +882,32 @@ fn evidence(input: &Input, ctx: &Context) -> Result<Evidence> {
             for line in text.lines().filter(|l| !l.trim().is_empty()) {
                 let r: Value = serde_json::from_str(line).map_err(|e| invalid(format!("{source}: invalid JSONL record: {e}")))?;
                 records += 1;
+                if r["kind"] == "registers" {
+                    // Whole-run A0-A6 value frequencies from trace coverage.
+                    if cpu == Cpu::M68000 {
+                        ev.address_registers.resize(7, BTreeMap::new());
+                        ev.traced += r["steps"].as_u64().unwrap_or(0);
+                        for (i, values) in r["a"].as_array().into_iter().flatten().take(7).enumerate() {
+                            for pair in values.as_array().into_iter().flatten() {
+                                if let (Some(v), Some(n)) = (number(&pair[0]), pair[1].as_u64()) {
+                                    *ev.address_registers[i].entry(v).or_default() += n;
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
                 let Some(pc) = number(&r["pc"]) else { continue };
-                if r.get("af").is_some() {
+                if matches!(r["kind"].as_str(), Some("pc" | "edge")) {
+                    // Trace coverage: distinct PCs and distinct transfers of a whole run.
+                    kind = "trace_coverage";
+                    if cpu != Cpu::M68000 {
+                        ev.ignore("other_cpu");
+                        continue;
+                    }
+                    let next = (r["kind"] == "edge").then(|| number(&r["next_pc"])).flatten();
+                    add(&mut ev, pc, next);
+                } else if r.get("af").is_some() {
                     // Z80 trace record; successive records are successive instructions
                     // unless a PC filter left gaps (the target check in Ghidra filters most).
                     kind = "z80_trace";
@@ -2180,6 +2205,27 @@ mod tests {
         let z80 = import(&a, &ctx).unwrap();
         assert!(z80.evidence.executed.is_empty());
         assert!(z80.evidence.ignored_pcs["other_cpu"] > 0);
+    }
+
+    #[test]
+    fn trace_coverage_artifacts_are_evidence() {
+        let (dir, ctx) = context();
+        let rom = rom(dir.path());
+        let rows = [
+            json!({"kind":"pc","pc":0x20C,"hits":5,"first_step":3,"first_frame":0}),
+            json!({"kind":"pc","pc":0x240,"hits":5,"first_step":4,"first_frame":0}),
+            json!({"kind":"edge","pc":0x20C,"next_pc":0x240,"hits":5}),
+            json!({"kind":"registers","steps":2000,"a":[[],[],[],[],[],[[0x312,1990],[0,10]],[]]}),
+        ];
+        let path = dir.path().join("coverage.jsonl");
+        fs::write(&path, rows.iter().map(|r| r.to_string() + "\n").collect::<String>()).unwrap();
+        let mut a = input(&rom);
+        a.evidence = vec![path.display().to_string()];
+        let imp = import(&a, &ctx).unwrap();
+        assert_eq!(imp.evidence.executed.iter().copied().collect::<Vec<_>>(), [0x20C, 0x240]);
+        assert_eq!(imp.evidence.flows.iter().copied().collect::<Vec<_>>(), [(0x20C, 0x240)]);
+        assert_eq!(imp.evidence.sources[0]["kind"], "trace_coverage");
+        assert_eq!(imp.evidence.register_hints()[0]["suggestion"], "register A5=312");
     }
 
     #[test]

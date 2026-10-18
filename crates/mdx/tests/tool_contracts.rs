@@ -436,6 +436,7 @@ fn probes_preserve_instruction_boundary_state_and_report_every_record_cap() {
     assert_eq!(record["width_bits"], 16);
     assert_eq!(record["writer"], "m68000");
     assert_eq!(record["a"][7], 0xFF1000);
+    assert_eq!(record["in_interrupt"], false);
     let trace = call(
         "trace",
         json!({"rom":path,"instructions":8,"max_records":2}),

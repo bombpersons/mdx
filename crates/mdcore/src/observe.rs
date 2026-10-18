@@ -25,6 +25,9 @@ pub struct WramWrite {
     pub d: Option<[u32; 8]>,
     pub a: Option<[u32; 8]>,
     pub sr: Option<u16>,
+    /// Written by a 68000 instruction inside an interrupt handler (from
+    /// interrupt entry to its RTE). Entry-frame pushes are `interrupt_entry`.
+    pub in_interrupt: bool,
 }
 
 pub struct WramWatch {

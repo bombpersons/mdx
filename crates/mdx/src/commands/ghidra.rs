@@ -31,6 +31,8 @@ const FORMAT: u32 = 1;
 const FILE_LIMIT: u64 = 64 * 1024 * 1024;
 const MAX_EXECUTED: usize = 262_144;
 const MAX_FLOWS: usize = 65_536;
+/// Distinct addresses written in interrupt context that evidence may mark volatile.
+const MAX_INTERRUPT_WRITES: usize = 1024;
 const LISTING_LIMIT: usize = 2048;
 const WRAM: u32 = 0xFF_0000;
 type Result<T> = std::result::Result<T, Failure>;
@@ -177,7 +179,8 @@ macro_rules! with_input {
             /// Hex RAM addresses ADDR or ADDR:LEN (LEN hex, default 1) that interrupt
             /// handlers or hardware change, e.g. FFE4EE:4 for a counter the VBlank
             /// handler decrements. The decompiler then keeps every read of them instead
-            /// of folding a polling loop into an infinite one.
+            /// of folding a polling loop into an infinite one. Watch evidence adds the
+            /// addresses that interrupt handlers write.
             #[arg(long = "volatile")]
             #[serde(default)]
             pub volatile: Vec<String>,
@@ -786,7 +789,7 @@ pub struct Mapping {
     entries: Vec<u32>,
     /// Register context applied over all code.
     registers: BTreeMap<String, u32>,
-    /// Folded [start, end) ranges marked volatile by request.
+    /// Folded [start, end) ranges marked volatile by request or evidence.
     #[serde(default)]
     volatile: Vec<(u32, u32)>,
     blocks: Vec<Block>,
@@ -803,11 +806,48 @@ struct Evidence {
     #[serde(skip)]
     address_registers: Vec<BTreeMap<u32, u64>>,
     traced: u64,
+    /// Folded address -> (bytes, first writer PC, writes) for 68000 watch
+    /// writes made inside an interrupt handler.
+    #[serde(default)]
+    interrupt_writes: BTreeMap<u32, (u32, u32, u64)>,
+    /// Interrupt-context writes near the stack pointer, taken as handler frames.
+    #[serde(default)]
+    interrupt_stack_writes: u64,
 }
 impl Evidence {
     fn summary(&self) -> Value {
         json!({"sources":self.sources,"executed_pcs":self.executed.len(),"flows":self.flows.len(),"ignored_pcs":self.ignored_pcs,
-            "truncated":self.truncated,"register_hints":self.register_hints()})
+            "truncated":self.truncated,"register_hints":self.register_hints(),
+            "volatile_from_evidence":self.interrupt_writes.iter().map(|(a,(len,pc,n))| json!({"address":a,"length":len,"writer_pc":pc,"writes":n,
+                "why":"written inside an interrupt handler"})).collect::<Vec<_>>(),
+            "interrupt_stack_writes":self.interrupt_stack_writes})
+    }
+    /// [start, end) ranges written from interrupt context.
+    fn volatile_ranges(&self) -> Vec<(u32, u32)> {
+        self.interrupt_writes.iter().map(|(&a, &(len, _, _))| (a, a + len)).collect()
+    }
+    fn interrupt_write(&mut self, r: &Value) {
+        let (Some(address), Some(bits)) = (number(&r["address"]), r["width_bits"].as_u64()) else { return };
+        let address = Cpu::M68000.fold(address);
+        // Pushes and locals sit just below/above the handler's stack pointer.
+        if let Some(sp) = number(&r["a"][7]).map(|sp| Cpu::M68000.fold(sp)) {
+            if address + 64 >= sp && address < sp + 256 {
+                self.interrupt_stack_writes += 1;
+                return;
+            }
+        }
+        let len = (bits as u32 / 8).clamp(1, 4).min(0x100_0000 - address);
+        let full = self.interrupt_writes.len() >= MAX_INTERRUPT_WRITES;
+        match self.interrupt_writes.get_mut(&address) {
+            Some(w) => {
+                w.0 = w.0.max(len);
+                w.2 += 1;
+            }
+            None if full => self.truncated = true,
+            None => {
+                self.interrupt_writes.insert(address, (len, number(&r["pc"]).unwrap_or(0), 1));
+            }
+        }
     }
     /// Address registers holding one value in at least 90% of traced steps: a
     /// candidate base register (compiled code's A5/A4 world) to pass as register context.
@@ -997,6 +1037,9 @@ fn evidence(input: &Input, ctx: &Context) -> Result<Evidence> {
                         continue;
                     }
                     add(&mut ev, pc, None);
+                    if r["in_interrupt"] == true && r["writer"] == "m68000" {
+                        ev.interrupt_write(&r);
+                    }
                 } else {
                     kind = "trace";
                     if cpu != Cpu::M68000 {
@@ -1362,7 +1405,7 @@ fn import(input: &Input, ctx: &Context) -> Result<Import> {
         }
         mapping.registers.insert(name, hex(value)?);
     }
-    mark_volatile(&mut mapping, &input.volatile)?;
+    mark_volatile(&mut mapping, &input.volatile, &ev.volatile_ranges())?;
     provenance["evidence"] = ev.summary();
     Ok(Import {
         subject,
@@ -1428,8 +1471,8 @@ fn macsbug_names(rom: &[u8]) -> Vec<(u32, u32, String)> {
 
 /// Ghidra's decompiler treats memory as volatile per block, so split each
 /// block (and every alias block mapped onto it) at the requested ranges and
-/// mark the middle pieces volatile.
-fn mark_volatile(mapping: &mut Mapping, specs: &[String]) -> Result<()> {
+/// mark the middle pieces volatile. Evidence ranges outside every block are dropped.
+fn mark_volatile(mapping: &mut Mapping, specs: &[String], from_evidence: &[(u32, u32)]) -> Result<()> {
     let cpu = mapping.cpu;
     let mut ranges = Vec::new();
     for spec in specs {
@@ -1448,6 +1491,14 @@ fn mark_volatile(mapping: &mut Mapping, specs: &[String]) -> Result<()> {
             return Err(invalid(format!("volatile {spec:?} is not inside one RAM or hardware block (ROM is never volatile)")));
         }
         ranges.push((start, start + len));
+    }
+    let requested = merge(ranges.clone());
+    for &(lo, hi) in from_evidence {
+        let (lo, hi) = (cpu.fold(lo), cpu.fold(lo) + (hi - lo));
+        let target = |b: &Block| cpu.fold(b.mapped_to.unwrap_or(b.start));
+        if mapping.blocks.iter().any(|b| target(b) <= lo && hi as u64 <= target(b) as u64 + b.size as u64) {
+            ranges.push((lo, hi));
+        }
     }
     let ranges = merge(ranges);
     if ranges.is_empty() {
@@ -1484,7 +1535,7 @@ fn mark_volatile(mapping: &mut Mapping, specs: &[String]) -> Result<()> {
                 piece.comment = None;
             }
             if piece.is_volatile && !b.is_volatile {
-                piece.comment = Some("volatile by request".into());
+                piece.comment = Some(if contains(&requested, base + off) { "volatile by request" } else { "volatile: written by an interrupt handler" }.into());
             }
             blocks.push(piece);
         }
@@ -2617,6 +2668,37 @@ mod tests {
             inp.volatile = vec![bad.into()];
             assert!(import(&inp, &ctx).is_err(), "{bad}");
         }
+    }
+
+    /// Watch writes from an interrupt handler mark their bytes volatile beside
+    /// requested ranges; main-code writes and handler stack frames do not.
+    #[test]
+    fn interrupt_watch_writes_are_volatile() {
+        let (dir, ctx) = context();
+        let write = |pc: u32, address: u32, bits: u8, in_interrupt: bool, sp: u32| {
+            json!({"pc":pc,"address":address,"folded_offset":address & 0xFFFF,"width_bits":bits,"before":0,"value":1,"frame":3,
+                "writer":"m68000","d":[0,0,0,0,0,0,0,0],"a":[0,0,0,0,0,0,0,sp],"sr":0x2600,"in_interrupt":in_interrupt}).to_string() + "\n"
+        };
+        let rows = [
+            write(0x250, 0xFF_E4EE, 16, true, 0xFF_FFF0),
+            write(0x252, 0xFFFF_E4EE, 32, true, 0xFF_FFF0), // alias, wider
+            write(0x210, 0xFF_E000, 16, false, 0xFF_FFF0),
+            write(0x254, 0xFF_FFE8, 32, true, 0xFF_FFEC), // movem push
+        ];
+        let path = dir.path().join("watch.jsonl");
+        fs::write(&path, rows.concat()).unwrap();
+        let mut a = input(&rom(dir.path()));
+        a.evidence = vec![path.display().to_string()];
+        a.volatile = vec!["FFE472".into()];
+        let imp = import(&a, &ctx).unwrap();
+        assert_eq!(imp.mapping.volatile, vec![(0xFF_E472, 0xFF_E473), (0xFF_E4EE, 0xFF_E4F2)]);
+        let summary = imp.evidence.summary();
+        assert_eq!(summary["volatile_from_evidence"], json!([{"address":0xFF_E4EE,"length":4,"writer_pc":0x250,"writes":2,
+            "why":"written inside an interrupt handler"}]));
+        assert_eq!(summary["interrupt_stack_writes"], 1);
+        assert_eq!(imp.evidence.sources[0]["kind"], "watch");
+        let piece = imp.mapping.blocks.iter().find(|b| b.name == "WRAM_FFE4EE").unwrap();
+        assert!(piece.is_volatile && piece.comment.as_deref().unwrap().contains("interrupt"));
     }
 
     #[test]

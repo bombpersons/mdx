@@ -80,18 +80,26 @@ share tails or fall through into each other (one routine can appear as part
 of another), and use data tables inline with code. decompile returns the
 instruction listing beside the pseudocode; trust the listing, and confirm
 behaviour with trace or watch. Pseudocode is most useful for C-compiled games.
+pseudocode_repairs counts two edits mdx makes to Ghidra's text: a volatile
+read Ghidra prints twice for one instruction (tst sets N and Z from two
+loads) keeps only the used copy, and an address formed register-relative
+(lea -1254(a5),a0) in pointer arithmetic reads (int)&DAT_fffffe2c instead of
+-0x1d4.
 
 Sweeps: ghidra_decompile_batch takes addrs (up to 200) and decompiles them in
 one Ghidra run, returning one result; results are cached per function, so a
 repeat costs nothing. It is brief by default, as is ghidra_decompile with
-brief: pseudocode and named callers/callees without the listing, mapping and
-provenance, which keeps large functions out of result_artifact.
+brief: pseudocode and callers/callees grouped per function ({to, to_name,
+count, sites}) without the listing, mapping and provenance, which keeps large
+functions out of result_artifact. brief:false gives one row per reference.
 
 Recording findings: ghidra_annotate renames functions and adds comments as a
 new revision (functions inline or a JSON file). labels:[{addr,name,size,comment}]
 names data: RAM globals, ROM tables, SRAM. Give size 1/2/4 so the address
-becomes byte/word/dword data; without it a long access reads `_name`. A work
-RAM name also covers its absolute-short alias. ghidra_export_symbols writes
+becomes byte/word/dword data; without it a long access reads `_name`. A size
+the code disagrees with (size 2, read by move.b) prints name._0_1_ and is
+listed in label_size_mismatches with the accessing sites. A work RAM name
+also covers its absolute-short alias. ghidra_export_symbols writes
 .symbols.json with function names bound to each body's bytes; pass it as
 symbols to a later analysis (other evidence, another state) and names whose
 bytes differ are withheld. Plain "ADDR NAME [function|data [SIZE]]" files are

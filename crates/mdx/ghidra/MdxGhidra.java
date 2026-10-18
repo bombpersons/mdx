@@ -388,6 +388,7 @@ public class MdxGhidra extends HeadlessScript {
         evidence.addProperty("not_disassembled", noInstruction);
         evidence.add("outside_functions_sample", outside);
         index.add("evidence", evidence);
+        if (mismatches != null) index.add("label_size_mismatches", mismatches);
         index.add("warnings", warnings);
         write("index", index);
     }
@@ -431,7 +432,50 @@ public class MdxGhidra extends HeadlessScript {
             }
             committed = true;
         } finally { currentProgram.endTransaction(transaction, committed); }
+        mismatches = request.has("labels") ? sizeMismatches(request.getAsJsonArray("labels")) : new JsonArray();
         exportIndex();
+    }
+    private JsonArray mismatches;
+    /**
+     * Sized labels the code accesses at another width (size 2, read by
+     * `move.b`), which print as `name._0_1_`. Only sized 68000 mnemonics
+     * (`.b/.w/.l`) are judged.
+     */
+    private JsonArray sizeMismatches(JsonArray labels) {
+        var out = new JsonArray();
+        var refs = currentProgram.getReferenceManager();
+        for (var item : labels) {
+            var l = item.getAsJsonObject();
+            if (!l.has("size")) continue;
+            int size = l.get("size").getAsInt();
+            var a = toAddr(l.get("address").getAsLong());
+            var sites = new java.util.TreeMap<Integer, JsonArray>();
+            var counts = new java.util.TreeMap<Integer, Integer>();
+            for (int off = 0; off < size; off++) {
+                for (var ref : refs.getReferencesTo(a.add(off))) {
+                    if (!ref.getReferenceType().isData()) continue;
+                    var ins = getInstructionAt(ref.getFromAddress());
+                    if (ins == null) continue;
+                    var m = ins.getMnemonicString().toLowerCase();
+                    int width = m.endsWith(".b") ? 1 : m.endsWith(".w") ? 2 : m.endsWith(".l") ? 4 : 0;
+                    if (width == 0 || (width == size && off == 0)) continue;
+                    counts.merge(width, 1, Integer::sum);
+                    var row = sites.computeIfAbsent(width, k -> new JsonArray());
+                    if (row.size() < 16) row.add(hex(ins.getAddress()) + " " + ins);
+                }
+            }
+            for (var e : sites.entrySet()) {
+                var r = new JsonObject();
+                r.addProperty("name", l.get("name").getAsString());
+                r.addProperty("address", hex(a));
+                r.addProperty("size", size);
+                r.addProperty("access_size", e.getKey());
+                r.addProperty("accesses", counts.get(e.getKey()));
+                r.add("sites", e.getValue());
+                out.add(r);
+            }
+        }
+        return out;
     }
     /** Decompiles each of request.addrs in one decompiler session. */
     private void decompile() throws Exception {
@@ -476,10 +520,146 @@ public class MdxGhidra extends HeadlessScript {
         result.addProperty("status", output.decompileCompleted() ? "complete" : output.isTimedOut() ? "timeout" : "decompile_failed");
         result.addProperty("diagnostic", output.getErrorMessage());
         if (output.decompileCompleted()) {
-            result.addProperty("pseudocode", output.getDecompiledFunction().getC());
+            var repairs = new JsonObject();
+            result.addProperty("pseudocode", repaired(f, output, repairs));
+            result.add("pseudocode_repairs", repairs);
             result.getAsJsonObject("function").addProperty("signature", output.getDecompiledFunction().getSignature());
         }
         return result;
+    }
+    /**
+     * Pseudocode with two artefacts of Ghidra's 68000 model repaired, counted in
+     * `repairs`. (1) SLEIGH flag macros read an operand once per flag
+     * (`tst.l x` sets N and Z from two loads), and volatile memory keeps both
+     * reads, so one instruction prints `uVar1 = x; iVar2 = x;`: the read whose
+     * result is unused is dropped. (2) A constant from register-relative
+     * addressing (`lea -1254(a5),a0`) used in pointer arithmetic prints as a
+     * bare integer: it is named `&symbol` when this function references that
+     * address from a register-relative operand.
+     */
+    private String repaired(Function f, ghidra.app.decompiler.DecompileResults output, JsonObject repairs) {
+        var original = output.getDecompiledFunction().getC();
+        repairs.addProperty("volatile_duplicate_reads_dropped", 0);
+        repairs.addProperty("register_relative_addresses_named", 0);
+        var markup = output.getCCodeMarkup();
+        var lines = new ghidra.app.decompiler.PrettyPrinter(f, markup, null).getLines();
+        var memory = currentProgram.getMemory();
+        // Volatile reads per (instruction, address); drop dead ones while another remains.
+        var reads = new java.util.HashMap<String, java.util.List<ghidra.program.model.pcode.PcodeOp>>();
+        var statements = new ArrayList<ghidra.app.decompiler.ClangStatement>();
+        collectStatements(markup, statements);
+        for (var st : statements) {
+            var op = st.getPcodeOp();
+            if (op == null || op.getOpcode() != ghidra.program.model.pcode.PcodeOp.CALLOTHER || op.getOutput() == null || op.getNumInputs() != 2) continue;
+            var src = op.getInput(1);
+            if (!src.isAddress()) continue;
+            var block = memory.getBlock(src.getAddress());
+            if (block == null || !block.isVolatile()) continue;
+            reads.computeIfAbsent(op.getSeqnum().getTarget() + "/" + src.getAddress(), k -> new ArrayList<>()).add(op);
+        }
+        var droppedOps = new java.util.HashSet<ghidra.program.model.pcode.PcodeOp>();
+        var droppedVars = new java.util.HashSet<ghidra.program.model.pcode.HighVariable>();
+        for (var group : reads.values()) {
+            if (group.size() < 2) continue;
+            int kept = group.size();
+            for (var op : group) {
+                if (kept == 1) break;
+                if (op.getOutput().getDescendants().hasNext()) continue;
+                droppedOps.add(op);
+                if (op.getOutput().getHigh() != null) droppedVars.add(op.getOutput().getHigh());
+                kept--;
+            }
+        }
+        // Register-relative reference targets of this function.
+        var relative = new java.util.HashSet<Long>();
+        for (var ins : currentProgram.getListing().getInstructions(f.getBody(), true)) {
+            for (var ref : ins.getReferencesFrom()) {
+                if (!ref.getReferenceType().isData() || !ref.getToAddress().isMemoryAddress() || ref.getOperandIndex() < 0) continue;
+                for (var o : ins.getOpObjects(ref.getOperandIndex())) {
+                    if (o instanceof ghidra.program.model.lang.Register) { relative.add(ref.getToAddress().getOffset()); break; }
+                }
+            }
+        }
+        var text = new java.util.HashMap<ghidra.app.decompiler.ClangToken, String>();
+        int named = 0;
+        for (var line : lines) {
+            var tokens = line.getAllTokens();
+            for (int i = 0; i < tokens.size(); i++) {
+                var t = tokens.get(i);
+                if (!(t instanceof ghidra.app.decompiler.ClangVariableToken)) continue;
+                var vn = t.getVarnode();
+                var op = t.getPcodeOp();
+                if (vn == null || !vn.isConstant() || vn.getSize() != 4 || op == null) continue;
+                int code = op.getOpcode();
+                if (code != ghidra.program.model.pcode.PcodeOp.INT_ADD && code != ghidra.program.model.pcode.PcodeOp.INT_SUB) continue;
+                if (!relative.contains(vn.getOffset())) continue;
+                var sym = getSymbolAt(toAddr(vn.getOffset()));
+                if (sym == null) continue;
+                var high = vn.getHigh();
+                boolean pointer = high != null && high.getDataType() instanceof ghidra.program.model.data.Pointer;
+                text.put(t, (pointer ? "&" : "(int)&") + sym.getName());
+                // An added 0xFFFFFE2C may print as `x - 0x1d4`; the name is added.
+                if (code == ghidra.program.model.pcode.PcodeOp.INT_ADD) {
+                    for (int j = i - 1; j >= 0; j--) {
+                        var prev = tokens.get(j);
+                        if (prev.getText().isBlank()) continue;
+                        if (prev.getText().equals("-")) text.put(prev, "+");
+                        break;
+                    }
+                }
+                named++;
+            }
+        }
+        if (droppedOps.isEmpty() && named == 0) return original;
+        // Re-rendering must reproduce Ghidra's text before it is trusted to edit it.
+        if (!render(lines, java.util.Set.of(), java.util.Set.of(), java.util.Map.of()).equals(original)) {
+            repairs.addProperty("skipped", "token rendering differs from Ghidra's text");
+            return original;
+        }
+        repairs.addProperty("volatile_duplicate_reads_dropped", droppedOps.size());
+        repairs.addProperty("register_relative_addresses_named", named);
+        return render(lines, droppedOps, droppedVars, text);
+    }
+    private String render(java.util.List<ghidra.app.decompiler.ClangLine> lines, java.util.Set<ghidra.program.model.pcode.PcodeOp> ops,
+            java.util.Set<ghidra.program.model.pcode.HighVariable> vars, java.util.Map<ghidra.app.decompiler.ClangToken, String> text) {
+        var out = new StringBuilder();
+        for (var line : lines) {
+            if (dropLine(line, ops, vars)) continue;
+            out.append(line.getIndentString());
+            for (var t : line.getAllTokens()) out.append(text.getOrDefault(t, t.getText()));
+            out.append('\n');
+        }
+        return out.toString();
+    }
+    private void collectStatements(ghidra.app.decompiler.ClangNode n, java.util.List<ghidra.app.decompiler.ClangStatement> out) {
+        if (n instanceof ghidra.app.decompiler.ClangStatement st) { out.add(st); return; }
+        for (int i = 0; i < n.numChildren(); i++) collectStatements(n.Child(i), out);
+    }
+    /** A line holding only dropped statements, or only the declaration of a variable they alone used. */
+    private boolean dropLine(ghidra.app.decompiler.ClangLine line, java.util.Set<ghidra.program.model.pcode.PcodeOp> ops,
+            java.util.Set<ghidra.program.model.pcode.HighVariable> vars) {
+        if (ops.isEmpty()) return false;
+        boolean any = false;
+        for (var t : line.getAllTokens()) {
+            ghidra.app.decompiler.ClangNode p = t.Parent();
+            while (p != null && !(p instanceof ghidra.app.decompiler.ClangStatement) && !(p instanceof ghidra.app.decompiler.ClangVariableDecl)) {
+                p = p.Parent();
+            }
+            if (p instanceof ghidra.app.decompiler.ClangStatement st && ops.contains(st.getPcodeOp())) { any = true; continue; }
+            if (p instanceof ghidra.app.decompiler.ClangVariableDecl d && vars.contains(d.getHighVariable()) && !usedElsewhere(d.getHighVariable(), ops)) { any = true; continue; }
+            // The terminating `;` belongs to the enclosing block, not the statement.
+            if (!t.getText().isBlank() && !t.getText().equals(";")) return false;
+        }
+        return any;
+    }
+    /** True if the variable is read or written by an op that stays in the output. */
+    private boolean usedElsewhere(ghidra.program.model.pcode.HighVariable h, java.util.Set<ghidra.program.model.pcode.PcodeOp> dropped) {
+        for (var vn : h.getInstances()) {
+            var def = vn.getDef();
+            if (def != null && !dropped.contains(def)) return true;
+            for (var it = vn.getDescendants(); it.hasNext();) if (!dropped.contains(it.next())) return true;
+        }
+        return false;
     }
     @Override public void run() throws Exception {
         try (var in = Files.newBufferedReader(Path.of(getScriptArgs()[0]), StandardCharsets.UTF_8)) {

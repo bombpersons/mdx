@@ -286,7 +286,8 @@ with_input!(
         #[schemars(range(min = 1, max = 300))]
         pub decompile_timeout: u32,
         /// Keep only the function, pseudocode, callers/callees and analysis
-        /// identity: drops the instruction listing, mapping and provenance, so
+        /// identity: drops the instruction listing, mapping and provenance, and
+        /// groups callers/callees per function ({to, to_name, count, sites}), so
         /// large functions stay inline instead of spilling to result_artifact.
         #[arg(long)]
         #[serde(default)]
@@ -303,7 +304,8 @@ with_input!(
         #[serde(default = "function_timeout")]
         #[schemars(range(min = 1, max = 300))]
         pub decompile_timeout: u32,
-        /// Drop listings, mapping and provenance (default true for batches).
+        /// Drop listings, mapping and provenance and group callers/callees per
+        /// function (default true for batches).
         #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
         #[serde(default = "yes")]
         pub brief: bool,
@@ -1951,6 +1953,27 @@ fn named(a: &Analysis, rows: Vec<Value>) -> Vec<Value> {
         })
         .collect()
 }
+/// Reference rows folded to one row per `key` (a callee or calling
+/// function) in first-seen order: `{key, name, count, sites}`, with the `site`
+/// addresses of every reference.
+fn grouped(rows: Vec<Value>, key: &str, name: &str, site: &str) -> Vec<Value> {
+    let mut order: Vec<String> = Vec::new();
+    let mut groups: BTreeMap<String, Value> = BTreeMap::new();
+    for r in rows {
+        let k = r[key].as_str().or(r[site].as_str()).unwrap_or("").to_string();
+        let g = groups.entry(k.clone()).or_insert_with(|| {
+            order.push(k.clone());
+            let mut g = json!({key:k,"count":0,"sites":[]});
+            if r[name].is_string() {
+                g[name] = r[name].clone();
+            }
+            g
+        });
+        g["count"] = json!(g["count"].as_u64().unwrap_or(0) + 1);
+        g["sites"].as_array_mut().unwrap().push(r[site].clone());
+    }
+    order.into_iter().map(|k| groups.remove(&k).unwrap()).collect()
+}
 fn same_address(cpu: Cpu, value: &Value, target: u32) -> bool {
     value.as_str().and_then(|s| hex(s).ok()).is_some_and(|addr| cpu.fold(addr) == target)
 }
@@ -2225,9 +2248,15 @@ fn decompiled(a: &Analysis, requested: &str, addr: u32, mut result: Value, brief
     out["decompile_status"] = json!(status);
     out["function"] = result["function"].take();
     out["pseudocode"] = result["pseudocode"].take();
+    out["pseudocode_repairs"] = result["pseudocode_repairs"].take();
     out["diagnostic"] = result["diagnostic"].take();
-    out["callers"] = page(&named(a, callers), 0, 100);
-    out["callees"] = page(&named(a, callees), 0, 100);
+    if brief {
+        out["callers"] = page(&grouped(named(a, callers), "function", "function_name", "from"), 0, 100);
+        out["callees"] = page(&grouped(named(a, callees), "to", "to_name", "from"), 0, 100);
+    } else {
+        out["callers"] = page(&named(a, callers), 0, 100);
+        out["callees"] = page(&named(a, callees), 0, 100);
+    }
     out["result_file"] = if result_path.exists() { json!(result_path) } else { Value::Null };
     let mut partial = (status != "complete").then(|| format!("pseudocode (decompile status {status})"));
     if brief {
@@ -2347,6 +2376,18 @@ fn label_rows(mapping: &Mapping, labels: Vec<LabelPatch>) -> Result<Vec<Value>> 
     Ok(rows)
 }
 
+/// Rows as reported back: `address` as a hex string like every other address.
+fn hex_addresses(rows: Vec<Value>) -> Vec<Value> {
+    rows.into_iter()
+        .map(|mut r| {
+            if let Some(a) = r["address"].as_u64() {
+                r["address"] = json!(format!("0x{a:08X}"));
+            }
+            r
+        })
+        .collect()
+}
+
 fn valid_size(size: Option<u32>) -> Result<()> {
     match size {
         None | Some(1 | 2 | 4) => Ok(()),
@@ -2456,11 +2497,24 @@ pub fn annotate(args: AnnotateArgs, ctx: &Context) -> Result<Envelope<Value>> {
     save_json(&a.path, &a.manifest)?;
     pending.keep();
     discard_project(&old, Some(&old_fingerprint));
+    let mismatches = a.index["label_size_mismatches"].as_array().cloned().unwrap_or_default();
     let mut out = summary(&a);
     out["conflicts"] = json!(conflicts);
-    out["patches"] = json!(patches);
-    out["labels"] = json!(labels);
-    Ok(envelope("annotate", &a, out, None))
+    out["patches"] = json!(hex_addresses(patches));
+    out["labels"] = json!(hex_addresses(labels));
+    out["label_size_mismatches"] = json!(mismatches);
+    let mut env = envelope("annotate", &a, out, None);
+    for m in &mismatches {
+        env.warnings.push(Warning::new(
+            "ghidra",
+            format!(
+                "label {} at {} has size {} but code accesses it with size {} ({}); pseudocode shows partial fields such as {}._0_1_",
+                m["name"].as_str().unwrap_or(""), m["address"].as_str().unwrap_or(""), m["size"], m["access_size"],
+                m["sites"][0].as_str().unwrap_or(""), m["name"].as_str().unwrap_or("")
+            ),
+        ));
+    }
+    Ok(env)
 }
 
 pub fn export_symbols(args: ExportArgs, ctx: &Context) -> Result<Envelope<Value>> {
@@ -2589,6 +2643,22 @@ mod tests {
     }
     fn input(rom: &Path) -> Input {
         Input { rom: Some(rom.display().to_string()), timeout: 300, ghidra_home: Some(PathBuf::from("/nonexistent/ghidra")), ..Input::default() }
+    }
+
+    /// Brief results fold 24 calls to one routine into one row.
+    #[test]
+    fn grouped_references_count_sites() {
+        let rows = vec![
+            json!({"from":"0x10","to":"0x312","to_name":"Random"}),
+            json!({"from":"0x20","to":"0x318"}),
+            json!({"from":"0x30","to":"0x312","to_name":"Random"}),
+        ];
+        let g = grouped(rows, "to", "to_name", "from");
+        assert_eq!(g, vec![
+            json!({"to":"0x312","to_name":"Random","count":2,"sites":["0x10","0x30"]}),
+            json!({"to":"0x318","count":1,"sites":["0x20"]}),
+        ]);
+        assert_eq!(hex_addresses(vec![json!({"address":0xFF_E800u32})]), vec![json!({"address":"0x00FFE800"})]);
     }
 
     #[test]

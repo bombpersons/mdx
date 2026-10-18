@@ -23,3 +23,9 @@ schemars = "1"
 opt-level = 3
 lto = "thin"
 debug = 1
+
+# Release downloads (`cargo build --profile dist`): no debug info, symbols stripped.
+[profile.dist]
+inherits = "release"
+debug = 0
+strip = true

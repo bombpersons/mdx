@@ -54,16 +54,26 @@ fn outcome(client: &str, status: &str, detail: impl Into<String>, command: Optio
     Outcome { client: client.into(), status: status.into(), detail: detail.into(), command }
 }
 
-/// `<client> mcp remove [scope] mdx`, then `<client> mcp add [scope] mdx -- BINARY mcp`.
+/// `<client> mcp remove [scope] mdx`, then `<client> mcp add [scope] mdx -- BINARY mcp`,
+/// unless the client already has exactly that entry.
 fn cli_client(client: &str, scope: &[&str], binary: &Path, dry_run: bool) -> Outcome {
     let binary = binary.to_string_lossy().into_owned();
     let mut add: Vec<String> = vec!["mcp".into(), "add".into()];
     add.extend(scope.iter().map(|s| s.to_string()));
     add.extend([NAME.into(), "--".into(), binary.clone(), "mcp".into()]);
     let shown = format!("{client} {}", add.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" "));
-    let Some(program) = which(client) else {
-        return outcome(client, "not_found", format!("{client} is not on PATH; run the command once it is installed"), Some(shown));
+    let Some((program, found)) = find_client(client) else {
+        let place = if client == "claude" { "on PATH or where Claude Code and the desktop app install it" } else { "on PATH" };
+        return outcome(client, "not_found", format!("{client} is not {place}; run the command once it is installed"), Some(shown));
     };
+    // Say which CLI did the work when it wasn't the one on PATH.
+    let using = match found {
+        Found::Path => String::new(),
+        Found::Fallback => format!(" (using {})", program.display()),
+    };
+    if current_entry(client, &program).is_some_and(|(command, args)| command == binary && args == ["mcp"]) {
+        return outcome(client, "unchanged", format!("{NAME} -> {binary} mcp{using}"), Some(shown));
+    }
     if dry_run {
         return outcome(client, "planned", format!("would replace any existing {NAME} entry using {}", program.display()), Some(shown));
     }
@@ -74,9 +84,110 @@ fn cli_client(client: &str, scope: &[&str], binary: &Path, dry_run: bool) -> Out
     remove.push(NAME.into());
     let _ = run(&program, &remove);
     match run(&program, &add) {
-        Ok(_) => outcome(client, "registered", format!("{NAME} -> {binary} mcp"), Some(shown)),
+        Ok(_) => outcome(client, "registered", format!("{NAME} -> {binary} mcp{using}"), Some(shown)),
         Err(error) => outcome(client, "failed", error, Some(shown)),
     }
+}
+
+/// The command and arguments of the client's existing `mdx` entry, if any
+/// (for Claude Code, only a user-scope one, which is what `add` writes).
+fn current_entry(client: &str, program: &Path) -> Option<(String, Vec<String>)> {
+    match client {
+        "claude" => parse_claude_get(&run(program, &["mcp".into(), "get".into(), NAME.into()]).ok()?),
+        "codex" => parse_codex_get(&run(program, &["mcp".into(), "get".into(), NAME.into(), "--json".into()]).ok()?),
+        _ => None,
+    }
+}
+
+/// `claude mcp get mdx` prints `Scope:`, `Command:` and `Args:` lines.
+fn parse_claude_get(text: &str) -> Option<(String, Vec<String>)> {
+    let field = |name: &str| {
+        text.lines().find_map(|line| line.trim().strip_prefix(name).map(|rest| rest.trim().to_string()))
+    };
+    if !field("Scope:")?.starts_with("User") {
+        return None;
+    }
+    let args = field("Args:").unwrap_or_default();
+    Some((field("Command:")?, args.split_whitespace().map(String::from).collect()))
+}
+
+/// `codex mcp get mdx --json` has `transport.command` and `transport.args`.
+fn parse_codex_get(text: &str) -> Option<(String, Vec<String>)> {
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    let transport = &value["transport"];
+    let args = match &transport["args"] {
+        serde_json::Value::Array(items) => items.iter().map(|a| a.as_str().map(String::from)).collect::<Option<_>>()?,
+        serde_json::Value::Null => Vec::new(),
+        _ => return None,
+    };
+    Some((transport["command"].as_str()?.to_string(), args))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Found {
+    Path,
+    Fallback,
+}
+
+/// The client's CLI: on PATH, or for Claude Code in the places its installer
+/// and the Claude desktop app put it without touching PATH.
+fn find_client(client: &str) -> Option<(PathBuf, Found)> {
+    if let Some(program) = which(client) {
+        return Some((program, Found::Path));
+    }
+    if client != "claude" {
+        return None;
+    }
+    let config_home = std::env::var_os("XDG_CONFIG_HOME").filter(|d| !d.is_empty()).map(PathBuf::from);
+    let app_data = std::env::var_os("APPDATA").map(PathBuf::from);
+    claude_candidates(home().as_deref(), config_home.as_deref(), app_data.as_deref())
+        .into_iter()
+        .find(|p| is_executable(p))
+        .map(|p| (p, Found::Fallback))
+}
+
+/// Where Claude Code may be installed off PATH, best first: the native
+/// installer's `~/.claude/local` and `~/.local/bin`, then the newest CLI the
+/// Claude desktop app bundles under `claude-code/<version>/<build>/`.
+fn claude_candidates(home: Option<&Path>, config_home: Option<&Path>, app_data: Option<&Path>) -> Vec<PathBuf> {
+    let exe = if cfg!(windows) { "claude.exe" } else { "claude" };
+    let mut candidates = Vec::new();
+    let mut bundles = Vec::new();
+    if let Some(home) = home {
+        candidates.push(home.join(".claude/local").join(exe));
+        candidates.push(home.join(".local/bin").join(exe));
+        bundles.push(config_home.map_or_else(|| home.join(".config"), Path::to_path_buf).join("Claude"));
+        bundles.push(home.join("Library/Application Support/Claude"));
+    }
+    bundles.extend(app_data.map(|d| d.join("Claude")));
+    for bundle in bundles {
+        candidates.extend(newest_bundled(&bundle.join("claude-code"), exe));
+    }
+    candidates
+}
+
+/// `<root>/<version>/<build>/<exe>` with the highest version.
+fn newest_bundled(root: &Path, exe: &str) -> Option<PathBuf> {
+    let subdirs = |dir: &Path| -> Vec<PathBuf> {
+        let mut dirs: Vec<PathBuf> = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.is_dir())
+            .collect();
+        dirs.sort();
+        dirs
+    };
+    let version = |dir: &Path| -> Option<Vec<u64>> {
+        dir.file_name()?.to_str()?.split('.').map(|part| part.parse().ok()).collect()
+    };
+    let mut versions: Vec<(Vec<u64>, PathBuf)> =
+        subdirs(root).into_iter().filter_map(|dir| Some((version(&dir)?, dir))).collect();
+    versions.sort();
+    versions
+        .into_iter()
+        .rev()
+        .find_map(|(_, dir)| subdirs(&dir).into_iter().map(|build| build.join(exe)).find(|p| p.is_file()))
 }
 
 fn run(program: &Path, args: &[String]) -> Result<String, String> {
@@ -363,5 +474,36 @@ mod tests {
         assert!(edit_opencode(&config, Path::new("/opt/mdx"), false).unwrap_err().contains("remote"));
         let fresh = dir.path().join("new/opencode.json");
         assert_eq!(edit_opencode(&fresh, Path::new("/opt/mdx"), false).unwrap(), "registered");
+    }
+
+    #[test]
+    fn existing_claude_and_codex_entries_are_read() {
+        let claude = "mdx:\n  Scope: User config (available in all your projects)\n  Status: \u{2714} Connected\n  Type: stdio\n  Command: /opt/mdx\n  Args: mcp\n  Environment:\n";
+        assert_eq!(parse_claude_get(claude), Some(("/opt/mdx".into(), vec!["mcp".into()])));
+        assert_eq!(parse_claude_get(&claude.replace("User config", "Project config")), None, "only the user entry counts");
+        let codex = r#"{"name":"mdx","enabled":true,"transport":{"type":"stdio","command":"/opt/mdx","args":["mcp"],"env":null}}"#;
+        assert_eq!(parse_codex_get(codex), Some(("/opt/mdx".into(), vec!["mcp".into()])));
+        assert_eq!(parse_codex_get(r#"{"transport":{"type":"streamable_http","url":"http://x"}}"#), None);
+    }
+
+    #[test]
+    fn bundled_claude_is_found_newest_version_first() {
+        let exe = if cfg!(windows) { "claude.exe" } else { "claude" };
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path().join(".config/Claude/claude-code");
+        for (version, build) in [("2.1.9", "aaa"), ("2.1.295", "bbb"), ("notes", "ccc")] {
+            std::fs::create_dir_all(root.join(version).join(build)).unwrap();
+            std::fs::write(root.join(version).join(build).join(exe), "").unwrap();
+        }
+        std::fs::create_dir_all(root.join("2.2.0/empty")).unwrap();
+        let candidates = claude_candidates(Some(home.path()), None, None);
+        assert_eq!(candidates[0], home.path().join(".claude/local").join(exe));
+        assert_eq!(candidates.last(), Some(&root.join("2.1.295/bbb").join(exe)));
+        let app_data = tempfile::tempdir().unwrap();
+        let windows = app_data.path().join("Claude/claude-code/1.0.0/x");
+        std::fs::create_dir_all(&windows).unwrap();
+        std::fs::write(windows.join(exe), "").unwrap();
+        let candidates = claude_candidates(None, None, Some(app_data.path()));
+        assert_eq!(candidates, vec![windows.join(exe)]);
     }
 }

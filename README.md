@@ -41,13 +41,35 @@ emulate.
 - **Record audio** as WAV, VGM, or separate stems per FM/PSG voice.
 - **Save and resume** the whole machine at any point.
 - **Compare images**, for example a remake against the original.
-- **Spin up a native game template** (Rust + Bevy) with a Mega Drive-sized
-  screen, for when you start rebuilding a game for real.
+- **Start a native port** (Rust + Bevy): a workspace that keeps a reusable
+  engine apart from the game, draws with Mega Drive palettes, tiles and
+  priorities, and tests the port against per-frame recordings of the
+  original (`mdx guide port`).
 
 You can use all of this from the command line, or plug mdx into an AI coding
 agent as an MCP server.
 
-## Quick start
+## Install
+
+Linux and macOS:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/bombpersons/mdx/main/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/bombpersons/mdx/main/install.ps1 | iex"
+```
+
+The installer puts `mdx` in `~/.local/bin` (Windows: `%LOCALAPPDATA%\mdx\bin`),
+checks the download's SHA-256, and registers mdx as an MCP server with any of
+Claude Code, Codex and OpenCode it finds (`MDX_NO_MCP=1` skips that; run
+`mdx setup mcp` later to register again). Run it again to update. Releases
+are on [GitHub](https://github.com/bombpersons/mdx/releases).
+
+## Build from source
 
 You'll need Rust (1.88 or newer) and a C++ compiler.
 
@@ -65,7 +87,8 @@ To use it from an agent, run it as an MCP server:
 target/release/mdx --root /path/to/your/project mcp
 ```
 
-Installer scripts for Codex and OpenCode are in `tools/`.
+`mdx setup mcp` registers that binary with Claude Code, Codex and OpenCode
+(`--dry-run` shows what it would change).
 
 No game ROMs are included, and none are needed to build mdx or run its tests.
 
@@ -74,6 +97,8 @@ No game ROMs are included, and none are needed to build mdx or run its tests.
 - [README_FOR_AGENTS.md](README_FOR_AGENTS.md): the detailed tour, covering
   architecture, how accuracy is checked, the tooling and the house rules.
 - [docs/mdx.md](docs/mdx.md): the full command/API handbook.
+- [docs/port-prompt.md](docs/port-prompt.md): a starting prompt for an agent
+  porting a game.
 - [docs/save-states.md](docs/save-states.md) and
   [docs/audio-development.md](docs/audio-development.md).
 

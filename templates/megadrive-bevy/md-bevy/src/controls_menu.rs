@@ -1,4 +1,4 @@
-//! Minimal example controls menu, drawn inside the 320×224 game framebuffer in
+//! Minimal example controls menu, drawn inside the game framebuffer in
 //! a Mega Drive style: palette-snapped colours, a bordered window with a hard
 //! shadow, and the 5×7 bitmap font from `pixel_font`. Move it with `POSITION`, restyle it with the
 //! constants below, or delete this module and drive `rebind::Rebind` from your
@@ -8,7 +8,9 @@
 //! Its navigation keys are fixed, so a bad binding can never lock you out.
 use crate::controller::{Button, ControllerBindings};
 use crate::pixel_font::{self, ADVANCE};
-use crate::rebind::{Rebind, key_name, pad_name};
+use crate::look::MdColor;
+use crate::rebind::{BindingsFile, Rebind, key_name, pad_name};
+use crate::screen::Depth;
 use bevy::prelude::*;
 use bevy::sprite::Anchor;
 
@@ -28,7 +30,8 @@ const SELECTED: Color = md(7, 6, 0);
 
 /// A colour from the Mega Drive's 3-bit-per-channel palette (levels 0..7).
 const fn md(r: u8, g: u8, b: u8) -> Color {
-    Color::srgb_u8(r * 36, g * 36, b * 36)
+    let [r, g, b] = MdColor::new(r, g, b).to_srgb_u8(crate::look::Shade::Normal);
+    Color::srgb_u8(r, g, b)
 }
 
 /// Rows: one per Mega Drive button, then reset.
@@ -68,7 +71,7 @@ fn spawn(mut commands: Commands) {
     commands
         .spawn((
             MenuRoot,
-            Transform::from_translation(POSITION.extend(50.0)),
+            Transform::from_translation(POSITION.extend(Depth::OVERLAY)),
             Visibility::Hidden,
         ))
         .with_children(|menu| {
@@ -95,6 +98,7 @@ fn navigate(
     mut menu: ResMut<ControlsMenu>,
     mut rebind: ResMut<Rebind>,
     mut bindings: ResMut<ControllerBindings>,
+    file: Res<BindingsFile>,
 ) {
     // A press that completed a capture this frame belongs to the capture.
     if rebind.capturing().is_some() || rebind.is_changed() {
@@ -114,7 +118,7 @@ fn navigate(
         menu.row = (menu.row + 1) % ROWS;
     } else if keys.just_pressed(KeyCode::Enter) || pad(GamepadButton::South) {
         match menu.row {
-            RESET => rebind.reset(&mut bindings),
+            RESET => rebind.reset(&mut bindings, &file),
             row => rebind.start(Button::ALL[row]),
         }
     }

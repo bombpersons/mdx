@@ -2266,6 +2266,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "md-bevy",
+ "ron",
+ "serde",
+]
+
+[[package]]
 name = "enumn"
 version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2941,6 +2951,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "import"
+version = "0.1.0"
+dependencies = [
+ "png",
+]
+
+[[package]]
 name = "indexmap"
 version = "2.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3344,17 +3361,29 @@ dependencies = [
 ]
 
 [[package]]
-name = "mdx-game"
+name = "md-bevy"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "bevy",
  "bevy_render",
  "image",
+ "png",
  "rmcp",
+ "ron",
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "mdx-game"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "engine",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

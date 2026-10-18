@@ -5,3 +5,4 @@ pub mod context;
 pub mod envelope;
 pub mod mcp;
 pub mod operations;
+pub mod setup;

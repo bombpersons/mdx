@@ -1,33 +1,48 @@
-[package]
-name = "mdx-game"
+# One workspace, one target directory, one lockfile:
+#
+#   md-bevy/       the mdx template's own crate. `mdx template update` replaces
+#                  it; extend it from engine/ or game/ instead of editing it
+#   engine/        this game's engine family: no names, numbers or assets from
+#                  this game
+#   game/          this title: controllers, rules, HUD, menus, baked assets
+#   tools/import/  offline importers: ROM data -> engine formats
+#
+# Standalone: copying the template does not require the mdx workspace.
+[workspace]
+resolver = "3"
+members = ["md-bevy", "engine", "game", "tools/import"]
+default-members = ["game"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.97.1"
 publish = false
 
-# Standalone: copying the template does not require the MDX workspace.
-[workspace]
-
-[features]
-default = []
-dev-mcp = ["dep:rmcp", "dep:tokio", "dep:base64", "dep:image"]
-
-[dependencies]
+[workspace.dependencies]
+md-bevy = { path = "md-bevy" }
+engine = { path = "engine" }
 bevy = { version = "=0.20.0", default-features = false, features = [
   "std", "async_executor", "multi_threaded", "bevy_asset", "bevy_log",
   "bevy_winit", "bevy_core_pipeline", "bevy_sprite_render", "bevy_gilrs", "png", "x11",
   # Lets key bindings be saved by `rebind`.
   "serialize",
 ] }
-# Bevy0.20 exposes native GLES on its renderer crate, not the facade features.
+# Bevy 0.20 exposes native GLES on its renderer crate, not the facade features.
 bevy_render = { version = "=0.20.0", default-features = false, features = ["gles"] }
-rmcp = { version = "=3.5.1", optional = true, features = ["transport-io"] }
-tokio = { version = "1", optional = true, features = ["rt-multi-thread", "sync", "time", "io-std"] }
+rmcp = { version = "=3.5.1", features = ["transport-io"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "io-std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-base64 = { version = "0.22", optional = true }
-image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
+# Hand-editable tables, tuning and palettes (the version Bevy already uses).
+ron = "0.12"
+# Indexed PNGs keep palette indices, which the look's palettes need.
+png = "0.18"
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png"] }
 
+# Iteration builds: your code at opt-level 1 (fast to rebuild), dependencies
+# (Bevy) at 3, so `cargo run` plays at close to release speed.
 [profile.dev]
 opt-level = 1
 

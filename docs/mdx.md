@@ -41,6 +41,9 @@ with exactly the same JSON arguments as MCP.
 | `survey` | `survey` | Batch named operations with per-item results |
 | `cpu.conformance` | `cpu_conformance` | Bounded independent instruction fixtures |
 | `schema` | `schema` | Discover the complete operation contracts |
+| `guide` | `guide` | Built-in workflow guidance: `overview`, `port` |
+| `template.create` | `template_create` | Create a native Rust/Bevy port workspace (engine + game) |
+| `template.update` | `template_update` | Update a created workspace's template-owned files |
 
 OpenCode prefixes raw tool names with the configured server name: for example,
 `mdx_boot`, `mdx_memory_read` and `mdx_artifact_view`.
@@ -207,6 +210,47 @@ both to RGB (palettes expanded, alpha composited on black) and reports absolute
 `changed_pixels`, `changed_bounds`, optional named `regions` with their own
 counts, and a `diff_artifact` PNG: changed pixels magenta over the dimmed left
 image. Sizes must match. A full-frame gate catches what a region gate misses.
+
+### Per-frame samples
+
+`boot` with `samples` (CLI: repeated `--sample ADDRESS:TYPE:LABEL`) records
+work RAM values at every frame boundary into a CSV artifact
+(`data.samples.artifact`), for trajectory tests of a native port. It needs
+`frames`. Types are `u8 s8 u16 s16 u32 s32` and the fixed-point `fx8.8`
+(signed word / 256) and `fx16.16` (signed longword / 65536); values are
+big-endian, as the 68000 stores them. Addresses are hexadecimal work RAM
+addresses (`0xFFD008`, `0xD008` or any `0xE00000..` alias).
+
+```json
+{"rom":"/abs/game.md","from_state":"sha256:...","frames":60,"instructions":5000000,
+ "input":"/abs/tests/data/walk.input.json",
+ "samples":[{"address":"0xFFD008","type":"s16","label":"x"},
+            {"address":"0xFFD00C","type":"s16","label":"y"}]}
+```
+
+The CSV header is `run_frame,frame,<labels>`. Row N is memory when run frame
+N begins (the frame counter advances at the start of vertical blank), before
+frame N's controller events take effect; row 0 is the starting state. The
+template's `md_bevy::testing::trajectory` reads it directly.
+
+### Native port workspace
+
+`template.create` writes a Cargo workspace for a native Bevy port into an
+absolute directory, typically the folder holding the ROM: existing files are
+kept, and it refuses only if a path it would write exists (an existing
+`AGENTS.md`, `README.md` or `.gitignore` is kept and reported as skipped).
+`md-bevy/` is the template's crate (Mega Drive look, ticks, input, launcher,
+testing, developer MCP); `engine/` holds registries, update-order sets, level
+and tuning formats and a sandbox game; `game/` the title; `tools/import/` the
+ROM importers. `.mdx-template.toml` records the version and file hashes.
+`template.update` (with `dry_run` first) replaces unedited `md-bevy/` files,
+writes `<file>.mdx-new` beside edited ones and copies changed seeded files
+under `.mdx/template-update/`. The workflow is in `mdx guide port`.
+
+```sh
+mdx template create --directory /abs/kings-bounty --name kings-bounty
+mdx template update --directory /abs/kings-bounty --dry-run
+```
 
 ### Frame pokes
 

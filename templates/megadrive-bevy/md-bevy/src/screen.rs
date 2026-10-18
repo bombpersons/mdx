@@ -1,4 +1,10 @@
-//! Normal Bevy game entities render on layer0 into this fixed-resolution target.
+//! Normal Bevy game entities render on layer 0 into this fixed-resolution
+//! target, which a second camera scales into the window.
+//!
+//! The target's world coordinates are Bevy's (origin at the centre, +y up).
+//! Mega Drive code thinks in screen pixels from the top-left, +y down:
+//! [`ScreenPosition`] places an entity that way, and [`Depth`] orders
+//! planes and sprites the way the original's priorities do.
 use bevy::{
     camera::{RenderTarget, visibility::RenderLayers},
     prelude::*,
@@ -13,16 +19,63 @@ pub struct Screen {
 }
 impl Default for Screen {
     fn default() -> Self {
-        Self {
-            width: 320,
-            height: 224,
-            image: default(),
-        }
+        Self::new(320, 224)
+    }
+}
+impl Screen {
+    pub fn new(width: u32, height: u32) -> Self {
+        Self { width, height, image: default() }
+    }
+    pub fn size(&self) -> Vec2 {
+        Vec2::new(self.width as f32, self.height as f32)
+    }
+    /// The world position of screen pixel `pixel` (top-left origin, +y down).
+    pub fn to_world(&self, pixel: Vec2) -> Vec2 {
+        Vec2::new(pixel.x - self.width as f32 / 2.0, self.height as f32 / 2.0 - pixel.y)
+    }
+}
+
+/// Where an entity's top-left corner sits on screen, in whole pixels from
+/// the screen's top-left, +y down. Use it with `Anchor::TOP_LEFT` sprites;
+/// [`place_on_screen`] writes the `Transform`'s x and y and keeps its z.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ScreenPosition(pub IVec2);
+
+/// Draw order (`Transform` z) matching the original's priorities: the
+/// backdrop, then each layer's low-priority tiles, then high-priority ones.
+/// Within a band, larger z draws in front, so sprites can add a small
+/// fraction for their order among themselves.
+pub struct Depth;
+impl Depth {
+    pub const BACKDROP: f32 = 0.0;
+    pub const PLANE_B_LOW: f32 = 1.0;
+    pub const PLANE_A_LOW: f32 = 2.0;
+    pub const SPRITES_LOW: f32 = 3.0;
+    pub const PLANE_B_HIGH: f32 = 4.0;
+    pub const PLANE_A_HIGH: f32 = 5.0;
+    pub const SPRITES_HIGH: f32 = 6.0;
+    /// Menus and debug overlays drawn over the game.
+    pub const OVERLAY: f32 = 50.0;
+}
+
+pub fn place_on_screen(
+    screen: Res<Screen>,
+    mut placed: Query<(&ScreenPosition, &mut Transform), Changed<ScreenPosition>>,
+) {
+    for (position, mut transform) in &mut placed {
+        let world = screen.to_world(position.0.as_vec2());
+        transform.translation.x = world.x;
+        transform.translation.y = world.y;
     }
 }
 
 #[derive(Component)]
 pub struct DisplayQuad;
+
+/// The camera drawing layer 0 into the screen texture. Its clear colour is
+/// the backdrop ([`crate::look::Palettes::backdrop`] sets it).
+#[derive(Component)]
+pub struct ScreenCamera;
 
 /// No window: only the game texture is rendered (`--headless`).
 #[derive(Resource, Clone, Copy)]
@@ -43,6 +96,7 @@ pub fn setup(
     image.texture_descriptor.usage |= bevy::render::render_resource::TextureUsages::COPY_SRC;
     screen.image = images.add(image);
     commands.spawn((
+        ScreenCamera,
         Camera2d,
         bevy::render::view::Msaa::Off,
         Camera {
@@ -97,6 +151,12 @@ pub fn fit_window(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn screen_pixels_map_to_centred_world_coordinates() {
+        let screen = Screen::new(320, 224);
+        assert_eq!(screen.to_world(Vec2::ZERO), Vec2::new(-160.0, 112.0));
+        assert_eq!(screen.to_world(Vec2::new(160.0, 112.0)), Vec2::ZERO);
+    }
     #[test]
     fn wide_tall_and_small_windows_fit_without_stretching() {
         let screen = Vec2::new(320., 224.);

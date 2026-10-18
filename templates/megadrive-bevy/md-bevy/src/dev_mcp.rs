@@ -1,9 +1,10 @@
 //! Developer-only stdio MCP bridge. Bevy owns all game and GPU state.
 //! The server thread sends bounded commands to the main thread and awaits replies.
 use crate::{
-    GameClock,
+    assets::{ASSET_DIR_ENV, AssetRoot, RequiredAssets},
     controller::{Button, ControllerState},
-    screen::Screen,
+    screen::{Headless, Screen},
+    shell::{GameClock, GameStatus},
 };
 use base64::Engine;
 use bevy::{
@@ -229,10 +230,11 @@ fn process_commands(
     pad: Res<ControllerState>,
     mut exit: MessageWriter<AppExit>,
     adapter: Option<Res<bevy::render::renderer::RenderAdapterInfo>>,
-    required: Res<crate::assets::RequiredAssets>,
+    required: Res<RequiredAssets>,
+    root: Res<AssetRoot>,
     server: Res<AssetServer>,
-    headless: Res<crate::screen::Headless>,
-    game: Res<crate::GameStatus>,
+    headless: Res<Headless>,
+    game: Res<GameStatus>,
 ) {
     if bridge.closed.load(Ordering::Acquire) {
         exit.write(AppExit::Success);
@@ -251,8 +253,8 @@ fn process_commands(
                 let _ = request.reply.send(Err(format!(
                     "required assets failed to load: {}; asset root is {} (set --assets or {})",
                     failed.join(", "),
-                    crate::assets::asset_root(),
-                    crate::assets::ASSET_DIR_ENV
+                    root.0.display(),
+                    ASSET_DIR_ENV
                 )));
                 continue;
             }
@@ -268,7 +270,7 @@ fn process_commands(
         match request.command {
             Command::Status => {
                 let renderer=adapter.as_ref().map(|info|json!({"name":info.name,"device_type":format!("{:?}",info.device_type),"backend":format!("{:?}",info.backend)}));
-                let assets=json!({"root":crate::assets::asset_root(),"pending":required.pending(&server),"failed":required.failed(&server)});
+                let assets=json!({"root":root.0,"pending":required.pending(&server),"failed":required.failed(&server)});
                 let _=request.reply.send(Ok(Response::Json(json!({"frame":clock.frame,"paused":control.paused,"headless":headless.0,"screen":{"width":screen.width,"height":screen.height},"controller_buttons":pad.buttons(),"renderer":renderer,"assets":assets,"game":game.0}))));
             }
             Command::Input(buttons) => {

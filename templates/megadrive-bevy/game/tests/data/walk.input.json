@@ -1,0 +1,7 @@
+{
+  "note": "Example replay in mdx's controller format: right for 4 frames, then nothing.",
+  "events": [
+    {"frame": 0, "port": 0, "buttons": ["right"]},
+    {"frame": 4, "port": 0, "buttons": []}
+  ]
+}

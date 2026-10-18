@@ -88,7 +88,7 @@ select the same WRAM bytes. `0x0000E01C` is accepted as **folded WRAM offset**
 `0xE01C` here; an actual CPU access to bus address `0xE01C` selects cartridge,
 not WRAM. Larger non-WRAM addresses are rejected. Reads wrap within the 64 KiB
 buffer, at most once; row labels wrap too and use canonical `0xFF0000` aliases.
-The CLI equivalent is `ram dump --range 0xFFE21C:32`.
+The CLI equivalent is `ram dump --range 0xFFE21C:0x20`.
 
 ### Z80 disassembly
 

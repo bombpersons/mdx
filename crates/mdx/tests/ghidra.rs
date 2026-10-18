@@ -110,7 +110,13 @@ fn live_ghidra_round_trip_uses_runtime_evidence() {
     assert_eq!(data["evidence_coverage"]["in_functions"], 5);
     let caller = &data["callers"]["items"][0];
     assert_eq!((caller["from"].as_str(), caller["type"].as_str()), (Some("0x0000020C"), Some("COMPUTED_CALL")));
+    // Rows name the functions at both ends, so no second lookup is needed.
+    assert!(caller["function_name"].is_string(), "{caller}");
     let analysis = data["analysis"].as_str().unwrap().to_string();
+
+    let reset = call("ghidra.decompile", json!({"analysis":analysis,"addr":"200"}), root);
+    let callees = reset["data"]["callees"]["items"].as_array().unwrap();
+    assert!(callees.iter().any(|c| c["to"] == "0x00000220" && c["to_name"].is_string()), "{callees:?}");
 
     let functions = call("ghidra.functions", json!({"analysis":analysis,"filter":"vblank"}), root);
     assert_eq!(functions["data"]["functions"]["items"][0]["entry"], "0x00000250");

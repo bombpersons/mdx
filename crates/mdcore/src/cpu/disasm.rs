@@ -595,8 +595,8 @@ fn decode(c: &mut Cur, bytes: &[u8], origin: u32) -> Option<String> {
                         return Some(format!("unlk {}", c.an(ir & 7)));
                     }
                     if ir & 0xFFC0 == 0x4EC0 {
-                        let w = if ir & 8 == 0 { "l" } else { "w" };
-                        return Some(format!("jmp{} {}", w, c.ea(mode, ir & 7, size)));
+                        // Unsized: the operand carries any .w of an absolute short.
+                        return Some(format!("jmp {}", c.ea(mode, ir & 7, size)));
                     }
                     if ir & 0xFFC0 == 0x4E80 {
                         return Some(format!(
@@ -1111,6 +1111,26 @@ mod status_move_tests {
         assert_eq!(d(&[0x00, 0x7C, 0x07, 0x00]), "ori.w #0x700,sr");
         assert_eq!(d(&[0x02, 0x7C, 0x27, 0x00]), "andi.w #0x2700,sr");
         assert_eq!(d(&[0x02, 0x7C, 0x27, 0x00]), "andi.w #0x2700,sr");
+    }
+}
+
+#[cfg(test)]
+mod jump_tests {
+    use super::*;
+
+    fn d(bytes: &[u8]) -> String {
+        disassemble(bytes, 0).text
+    }
+
+    /// King's Bounty's thunk table at $312 is `jmp abs.l` entries. Bit 3 of
+    /// the opcode is part of the EA mode, not a size, so it must not decide
+    /// a suffix: this used to print `jmpw 0x13B0C`.
+    #[test]
+    fn jmp_has_no_size_suffix() {
+        assert_eq!(d(&[0x4E, 0xF9, 0x00, 0x01, 0x3B, 0x0C]), "jmp 0x13B0C");
+        assert_eq!(d(&[0x4E, 0xF8, 0x12, 0x34]), "jmp 0x1234.w");
+        assert_eq!(d(&[0x4E, 0xD0]), "jmp (a0)");
+        assert_eq!(d(&[0x4E, 0xB9, 0x00, 0x01, 0x3B, 0x0C]), "jsr 0x13B0C");
     }
 }
 

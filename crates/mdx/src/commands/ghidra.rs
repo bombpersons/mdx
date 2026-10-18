@@ -1647,6 +1647,32 @@ fn valid_limit(n: usize) -> Result<()> {
 fn references(a: &Analysis) -> &[Value] {
     a.index["references"].as_array().map_or(&[], Vec::as_slice)
 }
+/// Reference rows with the names of the functions at each end, so a caller
+/// reading callees or xrefs needs no second lookup per row: `function_name`
+/// for the function containing `from`, `to_name` for a function entered at `to`.
+fn named(a: &Analysis, rows: Vec<Value>) -> Vec<Value> {
+    let cpu = a.manifest.cpu;
+    let names: BTreeMap<u32, &str> = a.index["functions"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice)
+        .iter()
+        .filter_map(|f| Some((cpu.fold(hex(f["entry"].as_str()?).ok()?), f["name"].as_str()?)))
+        .collect();
+    let name_at = |v: &Value| v.as_str().and_then(|s| hex(s).ok()).and_then(|x| names.get(&cpu.fold(x)).copied());
+    rows.into_iter()
+        .map(|mut r| {
+            if let Some(n) = name_at(&r["function"]) {
+                r["function_name"] = json!(n);
+            }
+            if r["to_space"] == "ram" {
+                if let Some(n) = name_at(&r["to"]) {
+                    r["to_name"] = json!(n);
+                }
+            }
+            r
+        })
+        .collect()
+}
 fn same_address(cpu: Cpu, value: &Value, target: u32) -> bool {
     value.as_str().and_then(|s| hex(s).ok()).is_some_and(|addr| cpu.fold(addr) == target)
 }
@@ -1767,8 +1793,8 @@ pub fn xrefs(args: XrefsArgs, ctx: &Context) -> Result<Envelope<Value>> {
     let mut out = summary(&a);
     out["requested_addr"] = json!(args.addr);
     out["addr"] = json!(format!("0x{target:08X}"));
-    out["references_to"] = page(&to, args.offset, args.limit);
-    out["references_from"] = page(&from, args.offset, args.limit);
+    out["references_to"] = page(&named(&a, to), args.offset, args.limit);
+    out["references_from"] = page(&named(&a, from), args.offset, args.limit);
     Ok(envelope("xrefs", &a, out, None))
 }
 
@@ -1838,8 +1864,8 @@ pub fn decompile(args: DecompileArgs, ctx: &Context) -> Result<Envelope<Value>> 
     out["diagnostic"] = result["diagnostic"].take();
     out["listing"] = result["listing"].take();
     out["listing_truncated"] = result["listing_truncated"].take();
-    out["callers"] = page(&callers, 0, 100);
-    out["callees"] = page(&callees, 0, 100);
+    out["callers"] = page(&named(&a, callers), 0, 100);
+    out["callees"] = page(&named(&a, callees), 0, 100);
     out["result_file"] = if result_path.exists() { json!(result_path) } else { Value::Null };
     let mut partial = (status != "complete").then(|| format!("pseudocode (decompile status {status})"));
     if out["listing_truncated"] == true {

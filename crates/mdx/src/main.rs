@@ -63,6 +63,12 @@ enum Command {
         #[command(subcommand)]
         command: TemplateCommand,
     },
+    /// Set up this machine: `mdx setup mcp` registers this binary with Claude
+    /// Code, Codex and OpenCode.
+    Setup {
+        #[command(subcommand)]
+        command: SetupCommand,
+    },
     /// Print built-in workflow guidance: overview (default) or port.
     Guide {
         #[arg(default_value = "overview")]
@@ -270,6 +276,23 @@ enum Command {
         offset: usize,
         #[arg(long, default_value_t = 4)]
         limit: usize,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum SetupCommand {
+    /// Register this mdx as the `mdx` MCP server with each agent client found
+    /// (claude, codex, opencode), replacing an older mdx entry.
+    Mcp {
+        /// Only these clients (repeatable): claude, codex, opencode.
+        #[arg(long = "client", value_name = "CLIENT")]
+        clients: Vec<String>,
+        /// Show what would change without changing anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Print the result as JSON.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -536,6 +559,35 @@ fn main() {
             ),
             Err(error) => usage_failure("mdx.template.update", error.message),
         },
+        Command::Setup {
+            command: SetupCommand::Mcp { clients, dry_run, json },
+        } => {
+            let binary = match std::env::current_exe().and_then(|p| p.canonicalize()) {
+                Ok(binary) => binary,
+                Err(error) => std::process::exit(usage_failure("mdx.setup", error.to_string())),
+            };
+            let outcomes = mdx::setup::mcp(&clients, &binary, dry_run);
+            let failed = outcomes.iter().any(|o| o.status == "failed");
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &serde_json::json!({"binary": binary, "dry_run": dry_run, "clients": outcomes})
+                    )
+                    .unwrap()
+                );
+            } else {
+                for outcome in &outcomes {
+                    println!("{:<9} {:<11} {}", outcome.client, outcome.status, outcome.detail);
+                    if outcome.status == "not_found" || outcome.status == "failed" {
+                        if let Some(command) = &outcome.command {
+                            println!("{:<21} run: {command}", "");
+                        }
+                    }
+                }
+            }
+            if failed { 1 } else { 0 }
+        }
         Command::Guide { topic } => {
             run_operation("guide", serde_json::json!({ "topic": topic }), &context)
         }

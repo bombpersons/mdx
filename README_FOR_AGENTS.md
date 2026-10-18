@@ -54,7 +54,10 @@ The release build of the whole workspace is slow-ish; when iterating on mdcore,
 
 - Discover contracts: `mdx schema` (paginated) / `mdx schema boot`.
 - Invoke anything: `mdx call boot --args '{"rom":"/abs/game.md","frames":60}'`.
-- MCP: `mdx --root /abs/project mcp`; installers in `tools/install-*-mcp*`.
+- MCP: `mdx --root /abs/project mcp`; `mdx setup mcp` registers the running
+  binary with Claude Code, Codex and OpenCode. Releases: push a `v*` tag
+  matching `[workspace.package] version` (`.github/workflows/release.yml`);
+  `install.sh` / `install.ps1` install the latest release.
 - Always pass `project_root` (absolute) per call; artifacts live in
   `<project_root>/.mdx/artifacts`. ROM paths should be absolute.
 - `boot` is the workhorse: bounded run, screenshot (scanline renderer), memory

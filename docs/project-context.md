@@ -71,22 +71,24 @@ which layer produced an earlier malformed call.
 
 ## Codex and OpenCode registration
 
-`tools/install-codex-mcp.sh` and `tools/install-opencode-mcp.py` register the
-absolute mdx executable with `mcp`, without pinning an unrelated project's root
-or store. Launch-directory defaults work for dedicated clients; explicit
+`mdx setup mcp` registers the running mdx executable with `mcp` (Claude Code
+and Codex through their CLIs, OpenCode by editing its global config), without
+pinning an unrelated project's root or store. It replaced the earlier
+`tools/install-codex-mcp.sh` and `tools/install-opencode-mcp.py`. Launch-directory defaults work for dedicated clients; explicit
 `project_root` remains reliable when the client reuses one server for projects.
 
-The OpenCode updater changes only mdx's command, preserves other configuration
-values and creates a timestamped backup. Its `--dry-run` prints the proposed
-entry. The existing global JSONC file is plain valid JSON; commented configs
+The OpenCode update changes only mdx's entry, preserves other configuration
+values and their order, and creates a timestamped backup. `--dry-run` prints
+what would change. The existing global JSONC file is plain valid JSON; commented configs
 are refused rather than being rewritten destructively.
 
 The user has updated both global registrations and their binary paths were
 verified. Workspace `opencode.json` overrides are also installed in the Mega
-Drive workspace and mdx checkout. For future moves, the global updater is:
+Drive workspace and mdx checkout (they point at the checkout's release build
+and take precedence over the global entry there). For future moves:
 
 ```sh
-/home/maisy/projects/reverse_engineering/megadrive/mdx/tools/install-opencode-mcp.py
+mdx setup mcp --client opencode
 ```
 
 Official configuration precedence: https://opencode.ai/docs/config/#per-project

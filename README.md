@@ -49,7 +49,27 @@ emulate.
 You can use all of this from the command line, or plug mdx into an AI coding
 agent as an MCP server.
 
-## Quick start
+## Install
+
+Linux and macOS:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/bombpersons/mdx/main/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/bombpersons/mdx/main/install.ps1 | iex"
+```
+
+The installer puts `mdx` in `~/.local/bin` (Windows: `%LOCALAPPDATA%\mdx\bin`),
+checks the download's SHA-256, and registers mdx as an MCP server with any of
+Claude Code, Codex and OpenCode it finds (`MDX_NO_MCP=1` skips that; run
+`mdx setup mcp` later to register again). Run it again to update. Releases
+are on [GitHub](https://github.com/bombpersons/mdx/releases).
+
+## Build from source
 
 You'll need Rust (1.88 or newer) and a C++ compiler.
 
@@ -67,7 +87,8 @@ To use it from an agent, run it as an MCP server:
 target/release/mdx --root /path/to/your/project mcp
 ```
 
-Installer scripts for Codex and OpenCode are in `tools/`.
+`mdx setup mcp` registers that binary with Claude Code, Codex and OpenCode
+(`--dry-run` shows what it would change).
 
 No game ROMs are included, and none are needed to build mdx or run its tests.
 

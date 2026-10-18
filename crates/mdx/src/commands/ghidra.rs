@@ -283,6 +283,26 @@ with_input!(
     }
 );
 with_input!(
+    pub struct DecompileBatchArgs {
+        /// Hex addresses, one per function (1..=200), decompiled in one Ghidra run.
+        #[arg(long = "addr", required = true)]
+        pub addrs: Vec<String>,
+        /// Per-function decompiler budget in seconds (1..=300).
+        #[arg(long, default_value_t = function_timeout())]
+        #[serde(default = "function_timeout")]
+        #[schemars(range(min = 1, max = 300))]
+        pub decompile_timeout: u32,
+        /// Drop listings, mapping and provenance (default true for batches).
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        #[serde(default = "yes")]
+        pub brief: bool,
+    }
+);
+const MAX_BATCH: usize = 200;
+fn yes() -> bool {
+    true
+}
+with_input!(
     pub struct FunctionsArgs {
         /// Case-insensitive substring of the name; unnamed functions are FUN_<address>.
         #[arg(long)]
@@ -408,6 +428,8 @@ pub enum Action {
     Functions(FunctionsArgs),
     /// Pseudocode, listing and callers/callees of the function containing an address.
     Decompile(DecompileArgs),
+    /// Decompile several functions in one Ghidra run, as one result.
+    DecompileBatch(DecompileBatchArgs),
     /// References to and from an address (code or data).
     Xrefs(XrefsArgs),
     /// Apply function renames and comments as a new analysis revision.
@@ -424,6 +446,7 @@ impl Action {
             Self::Analyze(a) => ("ghidra.analyze", v(&a)),
             Self::Functions(a) => ("ghidra.functions", v(&a)),
             Self::Decompile(a) => ("ghidra.decompile", v(&a)),
+            Self::DecompileBatch(a) => ("ghidra.decompile_batch", v(&a)),
             Self::Xrefs(a) => ("ghidra.xrefs", v(&a)),
             Self::Annotate(a) => ("ghidra.annotate", v(&a)),
             Self::ExportSymbols(a) => ("ghidra.export_symbols", v(&a)),
@@ -1562,7 +1585,8 @@ struct Analysis {
     path: PathBuf,
     manifest: Manifest,
     index: Value,
-    fresh_query: Option<Value>,
+    /// Decompile results produced during this call's import, by folded address.
+    fresh_query: BTreeMap<u32, Value>,
     _lock: Lock,
 }
 
@@ -1612,7 +1636,7 @@ fn cached(path: PathBuf, lock: Lock) -> Result<Analysis> {
         return Err(fail("invalid_artifact", "analysis input copy has changed"));
     }
     let index = read_json(&manifest.index)?;
-    Ok(Analysis { path, manifest, index, fresh_query: None, _lock: lock })
+    Ok(Analysis { path, manifest, index, fresh_query: BTreeMap::new(), _lock: lock })
 }
 
 fn open_analysis(path: &str, deadline: Instant, ctx: &Context) -> Result<Analysis> {
@@ -1631,7 +1655,7 @@ fn jump_tables(ev: &Evidence) -> Vec<Value> {
     by_source.into_iter().filter(|(_, t)| t.len() >= 2).map(|(from, targets)| json!({"from":from,"targets":targets})).collect()
 }
 
-fn prepare(input: &Input, addr: Option<u32>, decompile_timeout: u32, deadline: Instant, ctx: &Context) -> Result<Analysis> {
+fn prepare(input: &Input, addrs: &[u32], decompile_timeout: u32, deadline: Instant, ctx: &Context) -> Result<Analysis> {
     if let Some(path) = &input.analysis {
         return open_analysis(path, deadline, ctx);
     }
@@ -1687,8 +1711,8 @@ fn prepare(input: &Input, addr: Option<u32>, decompile_timeout: u32, deadline: I
     let mut request = json!({"mode":"export","index":index_path,"decompile_timeout":decompile_timeout,"listing_limit":LISTING_LIMIT,
         "query_result":attempt.join("query.json"),"jump_tables":tables,"executed":imp.evidence.executed,
         "clear_data_blocks":imp.mapping.blocks.iter().filter(|b| b.bytes.is_some()).map(|b| b.name.clone()).collect::<Vec<_>>()});
-    if let Some(a) = addr {
-        request["addr"] = json!(a);
+    if !addrs.is_empty() {
+        request["addrs"] = json!(addrs);
     }
     let export = attempt.join("export.json");
     save_json(&export, &request)?;
@@ -1749,16 +1773,16 @@ fn prepare(input: &Input, addr: Option<u32>, decompile_timeout: u32, deadline: I
     };
     save_json(&path, &manifest)?;
     pending.keep();
-    let fresh_query = match addr {
-        Some(a) => {
-            let value = read_json(&attempt.join("query.json"))?;
-            if value["status"] == "complete" {
-                save_json(&attempt.join(format!("decompile-{a:08X}.json")), &value)?;
+    let mut fresh_query = BTreeMap::new();
+    if !addrs.is_empty() {
+        let value = read_json(&attempt.join("query.json"))?;
+        for (&a, r) in addrs.iter().zip(value["results"].as_array().into_iter().flatten()) {
+            if r["status"] == "complete" {
+                save_json(&attempt.join(format!("decompile-{a:08X}.json")), r)?;
             }
-            Some(value)
+            fresh_query.insert(a, r.clone());
         }
-        None => None,
-    };
+    }
     Ok(Analysis { path, manifest, index, fresh_query, _lock: lock })
 }
 
@@ -1900,7 +1924,7 @@ pub fn doctor(args: DoctorArgs, ctx: &Context) -> Result<Envelope<Value>> {
 pub fn analyze(args: AnalyzeArgs, ctx: &Context) -> Result<Envelope<Value>> {
     let input = args.input();
     let deadline = budget(&input)?;
-    let a = prepare(&input, None, function_timeout(), deadline, ctx)?;
+    let a = prepare(&input, &[], function_timeout(), deadline, ctx)?;
     Ok(envelope("analyze", &a, summary(&a), None))
 }
 
@@ -1908,7 +1932,7 @@ pub fn functions(args: FunctionsArgs, ctx: &Context) -> Result<Envelope<Value>> 
     valid_limit(args.limit)?;
     let input = args.input();
     let deadline = budget(&input)?;
-    let a = prepare(&input, None, function_timeout(), deadline, ctx)?;
+    let a = prepare(&input, &[], function_timeout(), deadline, ctx)?;
     let filter = args.filter.unwrap_or_default().to_lowercase();
     let rows: Vec<Value> = a.index["functions"]
         .as_array()
@@ -1926,7 +1950,7 @@ pub fn xrefs(args: XrefsArgs, ctx: &Context) -> Result<Envelope<Value>> {
     valid_limit(args.limit)?;
     let input = args.input();
     let deadline = budget(&input)?;
-    let a = prepare(&input, None, function_timeout(), deadline, ctx)?;
+    let a = prepare(&input, &[], function_timeout(), deadline, ctx)?;
     let cpu = a.manifest.cpu;
     let target = cpu.fold(hex(&args.addr)?);
     let to: Vec<Value> = references(&a).iter().filter(|r| same_address(cpu, &r["to"], target) && r["to_space"] == "ram").cloned().collect();
@@ -1947,16 +1971,82 @@ pub fn decompile(args: DecompileArgs, ctx: &Context) -> Result<Envelope<Value>> 
     let deadline = budget(&input)?;
     let requested = hex(&args.addr)?;
     // Before analysis, the CPU comes from the arguments; afterwards from the manifest.
-    let mut a = prepare(&input, Some(input.cpu.fold(requested)), args.decompile_timeout, deadline, ctx)?;
+    let mut a = prepare(&input, &[input.cpu.fold(requested)], args.decompile_timeout, deadline, ctx)?;
+    let addr = a.manifest.cpu.fold(requested);
+    let result = query(&mut a, &input, &[addr], args.decompile_timeout, deadline, ctx)?.remove(0);
+    let (one, partial) = decompiled(&a, &args.addr, addr, result, args.brief);
+    let mut out = summary(&a);
+    for (k, v) in one.as_object().unwrap() {
+        out[k] = v.clone();
+    }
+    if args.brief {
+        let o = out.as_object_mut().unwrap();
+        o.remove("mapping");
+        o.remove("provenance");
+    }
+    Ok(envelope("decompile", &a, out, partial))
+}
+
+pub fn decompile_batch(args: DecompileBatchArgs, ctx: &Context) -> Result<Envelope<Value>> {
+    if !(1..=300).contains(&args.decompile_timeout) {
+        return Err(invalid("decompile_timeout must be 1..=300"));
+    }
+    if !(1..=MAX_BATCH).contains(&args.addrs.len()) {
+        return Err(invalid(format!("addrs must list 1..={MAX_BATCH} addresses")));
+    }
+    let input = args.input();
+    let deadline = budget(&input)?;
+    let requested = args.addrs.iter().map(|s| hex(s)).collect::<Result<Vec<_>>>()?;
+    let folded: Vec<u32> = requested.iter().map(|&r| input.cpu.fold(r)).collect();
+    let mut a = prepare(&input, &folded, args.decompile_timeout, deadline, ctx)?;
     let cpu = a.manifest.cpu;
-    let addr = cpu.fold(requested);
+    let folded: Vec<u32> = requested.iter().map(|&r| cpu.fold(r)).collect();
+    let results = query(&mut a, &input, &folded, args.decompile_timeout, deadline, ctx)?;
+    let mut incomplete = Vec::new();
+    let rows: Vec<Value> = args
+        .addrs
+        .iter()
+        .zip(&folded)
+        .zip(results)
+        .map(|((text, &addr), result)| {
+            let (row, partial) = decompiled(&a, text, addr, result, args.brief);
+            if partial.is_some() {
+                incomplete.push(format!("0x{addr:08X}"));
+            }
+            row
+        })
+        .collect();
+    let mut out = summary(&a);
+    if args.brief {
+        let o = out.as_object_mut().unwrap();
+        o.remove("mapping");
+        o.remove("provenance");
+    }
+    out["results"] = json!(rows);
+    let partial = (!incomplete.is_empty()).then(|| format!("results for {}", incomplete.join(", ")));
+    Ok(envelope("decompile_batch", &a, out, partial))
+}
+
+/// Raw Ghidra results for each folded address, in order: from this call's
+/// import, the per-analysis cache, or one worker run for all the rest.
+fn query(a: &mut Analysis, input: &Input, addrs: &[u32], decompile_timeout: u32, deadline: Instant, ctx: &Context) -> Result<Vec<Value>> {
     let attempt = a.manifest.index.parent().unwrap().to_path_buf();
-    let result_path = attempt.join(format!("decompile-{addr:08X}.json"));
-    let mut result = if let Some(result) = a.fresh_query.take() {
-        result
-    } else if result_path.is_file() {
-        read_json(&result_path)?
-    } else {
+    let cache = |addr: u32| attempt.join(format!("decompile-{addr:08X}.json"));
+    let mut found = BTreeMap::new();
+    let mut missing = Vec::new();
+    for &addr in addrs {
+        if found.contains_key(&addr) {
+            continue;
+        }
+        if let Some(r) = a.fresh_query.remove(&addr) {
+            found.insert(addr, r);
+        } else if cache(addr).is_file() {
+            found.insert(addr, read_json(&cache(addr))?);
+        } else if !missing.contains(&addr) {
+            missing.push(addr);
+        }
+    }
+    if !missing.is_empty() {
         let install = installation(input.ghidra_home.as_deref().or(Some(&a.manifest.installation.home)))?;
         if install.build_sha256 != a.manifest.installation.build_sha256 {
             return Err(fail("stale_analysis", "Ghidra version changed; query the rom with reanalyze"));
@@ -1965,7 +2055,7 @@ pub fn decompile(args: DecompileArgs, ctx: &Context) -> Result<Envelope<Value>> 
         let output = request.with_extension("result.json");
         save_json(
             &request,
-            &json!({"mode":"query","addr":addr,"decompile_timeout":args.decompile_timeout,"listing_limit":LISTING_LIMIT,"query_result":output}),
+            &json!({"mode":"query","addrs":missing,"decompile_timeout":decompile_timeout,"listing_limit":LISTING_LIMIT,"query_result":output}),
         )?;
         let mut cmd = command(&install, &attempt)?;
         cmd.arg(&a.manifest.project_dir)
@@ -1977,48 +2067,58 @@ pub fn decompile(args: DecompileArgs, ctx: &Context) -> Result<Envelope<Value>> 
             .arg(SCRIPT_NAME)
             .arg(&request);
         run_worker(&mut cmd, &request.with_extension("log"), deadline, ctx)?;
-        let result = read_json(&output)
+        let value = read_json(&output)
             .map_err(|e| fail("ghidra_failed", format!("{}; inspect {}", e.message, request.with_extension("log").display())))?;
+        let results = value["results"].as_array().filter(|r| r.len() == missing.len())
+            .ok_or_else(|| fail("ghidra_failed", format!("query returned no results; inspect {}", request.with_extension("log").display())))?;
         // Ghidra may touch project metadata even in read-only mode.
         a.manifest.project_fingerprint = fingerprint(&a.manifest.project_dir)?;
         save_json(&a.path, &a.manifest)?;
-        if result["status"] == "complete" {
-            save_json(&result_path, &result)?;
+        for (&addr, r) in missing.iter().zip(results) {
+            if r["status"] == "complete" {
+                save_json(&cache(addr), r)?;
+            }
+            found.insert(addr, r.clone());
         }
-        result
-    };
+    }
+    Ok(addrs.iter().map(|addr| found[addr].clone()).collect())
+}
+
+/// One function's result: pseudocode, listing (unless brief) and named
+/// callers/callees. The second value names what is partial, if anything.
+fn decompiled(a: &Analysis, requested: &str, addr: u32, mut result: Value, brief: bool) -> (Value, Option<String>) {
+    let cpu = a.manifest.cpu;
     let entry = result["function"]["entry"].as_str().unwrap_or("").to_string();
     let entry_addr = hex(&entry).ok().map(|e| cpu.fold(e));
-    let callers: Vec<Value> = references(&a)
+    let callers: Vec<Value> = references(a)
         .iter()
         .filter(|r| r["call"] == true && r["to_space"] == "ram" && entry_addr.is_some_and(|e| same_address(cpu, &r["to"], e)))
         .cloned()
         .collect();
-    let callees: Vec<Value> = references(&a).iter().filter(|r| r["call"] == true && r["function"] == entry).cloned().collect();
+    let callees: Vec<Value> = references(a).iter().filter(|r| r["call"] == true && r["function"] == entry).cloned().collect();
     let status = result["status"].as_str().unwrap_or("unknown").to_string();
-    let mut out = summary(&a);
-    out["requested_addr"] = json!(args.addr);
+    let result_path = a.manifest.index.parent().unwrap().join(format!("decompile-{addr:08X}.json"));
+    let mut out = json!({});
+    out["requested_addr"] = json!(requested);
     out["addr"] = json!(format!("0x{addr:08X}"));
     out["decompile_status"] = json!(status);
     out["function"] = result["function"].take();
     out["pseudocode"] = result["pseudocode"].take();
     out["diagnostic"] = result["diagnostic"].take();
-    out["listing"] = result["listing"].take();
-    out["listing_truncated"] = result["listing_truncated"].take();
-    out["callers"] = page(&named(&a, callers), 0, 100);
-    out["callees"] = page(&named(&a, callees), 0, 100);
+    out["callers"] = page(&named(a, callers), 0, 100);
+    out["callees"] = page(&named(a, callees), 0, 100);
     out["result_file"] = if result_path.exists() { json!(result_path) } else { Value::Null };
     let mut partial = (status != "complete").then(|| format!("pseudocode (decompile status {status})"));
-    if args.brief {
-        let o = out.as_object_mut().unwrap();
-        for key in ["listing", "listing_truncated", "mapping", "provenance"] {
-            o.remove(key);
+    if brief {
+        out["brief"] = json!(true);
+    } else {
+        out["listing"] = result["listing"].take();
+        out["listing_truncated"] = result["listing_truncated"].take();
+        if out["listing_truncated"] == true {
+            partial.get_or_insert_with(|| format!("listing[{LISTING_LIMIT}..]"));
         }
-        o.insert("brief".into(), json!(true));
-    } else if out["listing_truncated"] == true {
-        partial.get_or_insert_with(|| format!("listing[{LISTING_LIMIT}..]"));
     }
-    Ok(envelope("decompile", &a, out, partial))
+    (out, partial)
 }
 
 fn patches(cpu: Cpu, index: &Value, patch: Patch) -> Result<(Vec<Value>, Vec<Value>)> {
@@ -2327,6 +2427,7 @@ pub fn run(name: &str, arguments: Value, ctx: &Context) -> Result<Envelope<Value
         "ghidra.analyze" => analyze(de(arguments)?, ctx),
         "ghidra.functions" => functions(de(arguments)?, ctx),
         "ghidra.decompile" => decompile(de(arguments)?, ctx),
+        "ghidra.decompile_batch" => decompile_batch(de(arguments)?, ctx),
         "ghidra.xrefs" => xrefs(de(arguments)?, ctx),
         "ghidra.annotate" => annotate(de(arguments)?, ctx),
         "ghidra.export_symbols" => export_symbols(de(arguments)?, ctx),
@@ -2547,7 +2648,7 @@ mod tests {
     fn validation_and_missing_ghidra_fail_before_any_project_is_created() {
         let (dir, ctx) = context();
         let rom = rom(dir.path());
-        let run = |a: Input| prepare(&a, None, 30, budget(&a)?, &ctx).map(|_| ());
+        let run = |a: Input| prepare(&a, &[], 30, budget(&a)?, &ctx).map(|_| ());
         let mut both = input(&rom);
         both.analysis = Some("analysis.json".into());
         assert_eq!(budget(&both).err().unwrap().code, "invalid_arguments");

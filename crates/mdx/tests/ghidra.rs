@@ -116,6 +116,11 @@ fn live_ghidra_round_trip_uses_runtime_evidence() {
 
     let brief = call("ghidra.decompile", json!({"analysis":analysis,"addr":"242","brief":true}), root);
     assert!(brief["data"]["pseudocode"].is_string() && brief["data"]["listing"].is_null() && brief["data"]["mapping"].is_null(), "{brief}");
+    // One Ghidra run for several functions; the cached 0x242 result is reused.
+    let batch = call("ghidra.decompile_batch", json!({"analysis":analysis,"addrs":["220","242","220"]}), root);
+    let rows = batch["data"]["results"].as_array().unwrap();
+    assert_eq!(rows.iter().map(|r| r["function"]["entry"].as_str().unwrap()).collect::<Vec<_>>(), ["0x00000220", "0x00000240", "0x00000220"], "{batch}");
+    assert!(rows.iter().all(|r| r["pseudocode"].is_string() && r["listing"].is_null()), "{batch}");
     let reset = call("ghidra.decompile", json!({"analysis":analysis,"addr":"200"}), root);
     let callees = reset["data"]["callees"]["items"].as_array().unwrap();
     assert!(callees.iter().any(|c| c["to"] == "0x00000220" && c["to_name"].is_string()), "{callees:?}");

@@ -155,9 +155,23 @@ fn live_ghidra_volatile_keeps_polled_reads() {
     b[0x200..0x200 + code.len()].copy_from_slice(&code);
     fs::write(root.join("poll.md"), b).unwrap();
     let plain = call("ghidra.decompile", json!({"rom":"poll.md","addr":"200"}), root);
-    let marked = call("ghidra.decompile", json!({"rom":"poll.md","addr":"200","volatile":["FFE4EE:4"]}), root);
+    // A plain symbol line names the RAM global; the size makes it a dword, so
+    // the long accesses read `delay_counter` and not `_delay_counter`.
+    fs::write(root.join("poll.sym"), "200 Delay\nFFE4EE delay_counter data 4\n").unwrap();
+    let marked = call("ghidra.decompile", json!({"rom":"poll.md","addr":"200","volatile":["FFE4EE:4"],"symbols":["poll.sym"]}), root);
+    let analysis = marked["data"]["analysis"].as_str().unwrap().to_string();
     let plain = plain["data"]["pseudocode"].as_str().unwrap().to_string();
     let marked = marked["data"]["pseudocode"].as_str().unwrap().to_string();
-    assert!(marked.contains("Ram00ffe4ee = 5;") && marked.contains("!= 0);"), "plain:\n{plain}\nvolatile:\n{marked}");
+    assert!(marked.contains("delay_counter = 5;") && marked.contains("!= 0);"), "plain:\n{plain}\nvolatile:\n{marked}");
     assert!(!marked.contains("while( true )"), "{marked}");
+
+    let annotated = call("ghidra.annotate", json!({"analysis":analysis,"labels":[{"addr":"FFFFE4EE","name":"vblank_wait","size":4,"comment":"VBlank decrements"}]}), root);
+    assert_eq!(annotated["ok"], true, "{annotated}");
+    // WRAM and its absolute-short alias both carry the name.
+    assert_eq!(annotated["data"]["labels"].as_array().unwrap().len(), 2, "{annotated}");
+    let renamed = call("ghidra.decompile", json!({"analysis":analysis,"addr":"200"}), root);
+    let text = renamed["data"]["pseudocode"].as_str().unwrap();
+    assert!(text.contains("vblank_wait = 5;"), "{text}");
+    let bad = call("ghidra.annotate", json!({"analysis":analysis,"labels":[{"addr":"800000","name":"nowhere"}]}), root);
+    assert_eq!(bad["error"]["code"], "invalid_arguments", "{bad}");
 }

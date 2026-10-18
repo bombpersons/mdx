@@ -194,7 +194,7 @@ macro_rules! with_input {
             #[serde(default)]
             pub z80_size: Option<u32>,
             /// Name seeds: .symbols.json from ghidra_export_symbols (bytes verified) or
-            /// plain "ADDR NAME" lines (unverified).
+            /// plain "ADDR NAME [function|data [SIZE]]" lines (unverified).
             #[arg(long)]
             #[serde(default)]
             pub symbols: Vec<String>,
@@ -323,7 +323,8 @@ pub struct AnnotateArgs {
     /// Analysis manifest path.
     #[arg(long)]
     pub analysis: String,
-    /// JSON file {"functions":[{"addr":"1A2C","name":"UpdatePlayer","comment":"evidence..."}]}.
+    /// JSON file {"functions":[{"addr":"1A2C","name":"UpdatePlayer","comment":"evidence..."}],
+    /// "labels":[{"addr":"FFE800","name":"player_x"}]}.
     #[arg(long)]
     #[serde(default)]
     pub file: Option<PathBuf>,
@@ -331,6 +332,10 @@ pub struct AnnotateArgs {
     #[arg(skip)]
     #[serde(default)]
     pub functions: Vec<FunctionPatch>,
+    /// Data names inline: RAM globals, ROM tables, any mapped address.
+    #[arg(skip)]
+    #[serde(default)]
+    pub labels: Vec<LabelPatch>,
     #[arg(long)]
     #[serde(default)]
     pub ghidra_home: Option<PathBuf>,
@@ -360,7 +365,22 @@ pub struct ExportArgs {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Patch {
+    #[serde(default)]
     pub functions: Vec<FunctionPatch>,
+    #[serde(default)]
+    pub labels: Vec<LabelPatch>,
+}
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LabelPatch {
+    /// Hex address of the data (work RAM, ROM table, SRAM, ...).
+    pub addr: String,
+    pub name: String,
+    /// Bytes the global spans (1, 2 or 4): defines byte/word/dword data there,
+    /// so a long access reads `name`, not `_name`.
+    pub size: Option<u32>,
+    /// End-of-line comment at the address.
+    pub comment: Option<String>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -1469,13 +1489,36 @@ fn seed_symbols(input: &Input, imp: &mut Import, ctx: &Context) -> Result<()> {
             if line.is_empty() || line.starts_with(['#', ';']) {
                 continue;
             }
+            // ADDR NAME [function|data [SIZE]]; without a kind, code addresses are functions.
             let mut words = line.split_whitespace();
             if let (Some(a), Some(name)) = (words.next(), words.next()) {
                 let a = input.cpu.fold(hex(a)?);
-                if !valid_name(name) || !contains(&imp.mapping.code_ranges, a) {
-                    return Err(invalid(format!("{source}: symbol {name:?} at {a:#X} is outside the analysed code or not an identifier")));
+                if !valid_name(name) {
+                    return Err(invalid(format!("{source}: symbol {name:?} is not an identifier")));
                 }
-                imp.symbols.push(json!({"address":a,"name":name,"kind":"function"}));
+                let in_code = contains(&imp.mapping.code_ranges, a);
+                let function = match words.next() {
+                    None => in_code,
+                    Some("function") => true,
+                    Some("data") => false,
+                    Some(other) => return Err(invalid(format!("{source}: symbol kind {other:?} must be function or data"))),
+                };
+                if function {
+                    if !in_code {
+                        return Err(invalid(format!("{source}: function {name:?} at {a:#X} is outside the analysed code")));
+                    }
+                    imp.symbols.push(json!({"address":a,"name":name,"kind":"function"}));
+                } else {
+                    let size = words.next().map(|w| w.parse::<u32>().map_err(|_| invalid(format!("{source}: data size {w:?} must be 1, 2 or 4")))).transpose()?;
+                    valid_size(size)?;
+                    let at = aliases(&imp.mapping, a);
+                    if at.is_empty() {
+                        return Err(invalid(format!("{source}: data {name:?} at {a:#X} is outside the analysed memory")));
+                    }
+                    for a in at {
+                        imp.symbols.push(json!({"address":a,"name":name,"kind":"data","size":size}));
+                    }
+                }
             }
         }
     }
@@ -1959,8 +2002,8 @@ pub fn decompile(args: DecompileArgs, ctx: &Context) -> Result<Envelope<Value>> 
 }
 
 fn patches(cpu: Cpu, index: &Value, patch: Patch) -> Result<(Vec<Value>, Vec<Value>)> {
-    if patch.functions.is_empty() || patch.functions.len() > 1000 {
-        return Err(invalid("patch requires 1..=1000 functions"));
+    if patch.functions.len() > 1000 {
+        return Err(invalid("patch allows at most 1000 functions"));
     }
     let functions = index["functions"].as_array().ok_or_else(|| fail("invalid_artifact", "missing functions"))?;
     // Ghidra keys functions by their imported address, which can be an alias.
@@ -2026,6 +2069,68 @@ fn patches(cpu: Cpu, index: &Value, patch: Patch) -> Result<(Vec<Value>, Vec<Val
     Ok((rows.into_values().collect(), conflicts))
 }
 
+/// Label rows for Ghidra, one per alias of each address, so absolute-short
+/// work RAM accesses ($E4EE.w) carry the name as well as long ones.
+fn label_rows(mapping: &Mapping, labels: Vec<LabelPatch>) -> Result<Vec<Value>> {
+    let mut rows = Vec::new();
+    let mut seen = BTreeSet::new();
+    for l in labels {
+        let addr = mapping.cpu.fold(hex(&l.addr)?);
+        if !valid_name(&l.name) {
+            return Err(invalid("names must be ASCII identifiers, at most 128 characters"));
+        }
+        if let Some(c) = &l.comment {
+            if c.len() > 16384 || c.contains('\0') {
+                return Err(invalid("comment exceeds 16 KiB or contains NUL"));
+            }
+        }
+        if !seen.insert(addr) {
+            return Err(invalid(format!("duplicate label at 0x{addr:08X}")));
+        }
+        valid_size(l.size)?;
+        let at = aliases(mapping, addr);
+        if at.is_empty() {
+            return Err(invalid(format!("label {:?} at 0x{addr:08X} is outside the analysed memory", l.name)));
+        }
+        for a in at {
+            let mut row = json!({"address":a,"name":l.name});
+            if let Some(n) = l.size {
+                row["size"] = json!(n);
+            }
+            if let Some(c) = &l.comment {
+                row["comment"] = json!(c);
+            }
+            rows.push(row);
+        }
+    }
+    Ok(rows)
+}
+
+fn valid_size(size: Option<u32>) -> Result<()> {
+    match size {
+        None | Some(1 | 2 | 4) => Ok(()),
+        Some(n) => Err(invalid(format!("data size {n} must be 1, 2 or 4"))),
+    }
+}
+
+/// Every analysed address (image or block) that shows the folded address `a`.
+fn aliases(mapping: &Mapping, a: u32) -> Vec<u32> {
+    let cpu = mapping.cpu;
+    let mut out = Vec::new();
+    if a >= mapping.base && a < mapping.base + mapping.size {
+        out.push(a);
+    }
+    for b in &mapping.blocks {
+        let target = cpu.fold(b.mapped_to.unwrap_or(b.start));
+        if target <= a && (a as u64) < target as u64 + b.size as u64 {
+            out.push(b.start + (a - target));
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
 fn copy_project(source: &Path, target: &Path) -> Result<()> {
     fs::create_dir(target).map_err(io)?;
     for entry in fs::read_dir(source).map_err(io)? {
@@ -2052,16 +2157,21 @@ pub fn annotate(args: AnnotateArgs, ctx: &Context) -> Result<Envelope<Value>> {
     if !(1..=3600).contains(&args.timeout) {
         return Err(invalid("timeout must be 1..=3600"));
     }
-    let patch = match (&args.file, args.functions.is_empty()) {
-        (Some(file), true) => {
+    let inline = !args.functions.is_empty() || !args.labels.is_empty();
+    let mut patch: Patch = match (&args.file, inline) {
+        (Some(file), false) => {
             let file = if file.is_absolute() { file.clone() } else { ctx.root.join(file) };
             serde_json::from_value(read_json(&file)?).map_err(invalid)?
         }
-        (None, false) => Patch { functions: args.functions.clone() },
-        _ => return Err(invalid("give exactly one of file or functions")),
+        (None, true) => Patch { functions: args.functions.clone(), labels: args.labels.clone() },
+        _ => return Err(invalid("give exactly one of file or functions/labels")),
     };
+    if !(1..=1000).contains(&(patch.functions.len() + patch.labels.len())) {
+        return Err(invalid("patch requires 1..=1000 functions and labels"));
+    }
     let deadline = Instant::now() + Duration::from_secs(args.timeout);
     let mut a = open_analysis(&args.analysis, deadline, ctx)?;
+    let labels = label_rows(&a.manifest.mapping, std::mem::take(&mut patch.labels))?;
     let (patches, conflicts) = patches(a.manifest.cpu, &a.index, patch)?;
     let install = installation(args.ghidra_home.as_deref().or(Some(&a.manifest.installation.home)))?;
     if install.build_sha256 != a.manifest.installation.build_sha256 {
@@ -2077,7 +2187,7 @@ pub fn annotate(args: AnnotateArgs, ctx: &Context) -> Result<Envelope<Value>> {
     let index = attempt.join("index.json");
     let request = attempt.join("annotations.json");
     let executed = read_json(&a.manifest.setup_request).map(|s| s["executed"].clone()).unwrap_or(json!([]));
-    save_json(&request, &json!({"mode":"annotate","patches":patches,"index":index,"executed":executed}))?;
+    save_json(&request, &json!({"mode":"annotate","patches":patches,"labels":labels,"index":index,"executed":executed}))?;
     let mut cmd = command(&install, &attempt)?;
     cmd.arg(&project)
         .arg("project")
@@ -2107,6 +2217,7 @@ pub fn annotate(args: AnnotateArgs, ctx: &Context) -> Result<Envelope<Value>> {
     let mut out = summary(&a);
     out["conflicts"] = json!(conflicts);
     out["patches"] = json!(patches);
+    out["labels"] = json!(labels);
     Ok(envelope("annotate", &a, out, None))
 }
 
@@ -2248,6 +2359,31 @@ mod tests {
         assert_eq!(hex("$1A2C").unwrap(), 0x1A2C);
         assert_eq!(hex("0x00FF0000").unwrap(), 0xFF_0000);
         assert!(hex("zz").is_err());
+    }
+
+    /// Plain symbol lines name data as well as functions; a WRAM name also
+    /// lands on the absolute-short alias.
+    #[test]
+    fn plain_symbol_lines_name_data_and_its_aliases() {
+        let (dir, ctx) = context();
+        let mut inp = input(&rom(dir.path()));
+        fs::write(dir.path().join("game.sym"), "220 Helper\nFFE800 player_x data 2\n300 table data\n").unwrap();
+        inp.symbols = vec![dir.path().join("game.sym").display().to_string()];
+        let mut imp = import(&inp, &ctx).unwrap();
+        seed_symbols(&inp, &mut imp, &ctx).unwrap();
+        let mut data: Vec<(u64, &str, &Value)> = imp.symbols.iter().filter(|s| s["kind"] == "data")
+            .map(|s| (s["address"].as_u64().unwrap(), s["name"].as_str().unwrap(), &s["size"])).collect();
+        data.sort_by_key(|d| d.0);
+        assert_eq!(data, [(0x300, "table", &Value::Null), (0xFF_E800, "player_x", &json!(2)), (0xFFFF_E800, "player_x", &json!(2))]);
+        assert!(imp.symbols.iter().any(|s| s["name"] == "Helper" && s["kind"] == "function"));
+        for bad in ["FFE800 ram_fn function\n", "FFE800 x data 3\n", "FFE800 x thing\n"] {
+            fs::write(dir.path().join("game.sym"), bad).unwrap();
+            let mut imp = import(&inp, &ctx).unwrap();
+            assert!(seed_symbols(&inp, &mut imp, &ctx).is_err(), "{bad}");
+        }
+        let rows = label_rows(&imp.mapping, vec![LabelPatch { addr: "FFFFE800".into(), name: "low".into(), size: Some(2), comment: None }]).unwrap();
+        assert_eq!(rows.iter().map(|r| r["address"].as_u64().unwrap()).collect::<Vec<_>>(), [0xFF_E800, 0xFFFF_E800]);
+        assert!(label_rows(&imp.mapping, vec![LabelPatch { addr: "800000".into(), name: "x".into(), size: None, comment: None }]).is_err());
     }
 
     /// A polled counter is volatile in WRAM and in its absolute-short alias;

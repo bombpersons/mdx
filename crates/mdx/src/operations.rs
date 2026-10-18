@@ -490,7 +490,7 @@ pub fn descriptors() -> Vec<Descriptor> {
         descriptor::<commands::image::CompareArgs, commands::image::CompareData>("image.compare", "Compare two PNGs pixel by pixel (e.g. mdx screenshot vs native port): absolute changed counts, named regions, change bounds and a diff PNG."),
         descriptor::<commands::memory::DiffArgs, commands::memory::DiffData>("memory.diff", "Compare two captured buffers completely and page changed ranges without inferring execution or causality."),
         descriptor::<SurveyArgs, SurveyData>("survey", "Batch up to 32 explicitly selected operations with per-task results and pending IDs; nested surveys are rejected."),
-        descriptor::<commands::probe::ProbeArgs, commands::probe::ProbeData>("trace", "Trace bounded executed instructions from reset or from_state; frames, start_frame and replay frames are relative to the starting state. save_state publishes a resumable artifact; records go to JSONL."),
+        descriptor::<commands::probe::ProbeArgs, commands::probe::ProbeData>("trace", "Trace bounded executed instructions from reset or from_state; frames, start_frame and replay frames are relative to the starting state. save_state publishes a resumable artifact; records go to JSONL. coverage:true also records every distinct PC and control transfer of the whole run (ghidra evidence)."),
         descriptor::<commands::probe::ProbeArgs, commands::probe::ProbeData>("watch", "Observe folded WRAM writes with exact writer PC and pre-step registers. Supports from_state/save_state; frames, start_frame and controller replay are relative to the starting state."),
         descriptor::<HeaderArgs, commands::header::HeaderData>("header", "Inspect a Mega Drive cartridge header, vectors and declared memory ranges."),
         descriptor::<DisasmArgs, commands::disasm::DisasmData>("disasm", "Decode bounded cartridge instructions using mdcore's decoder; does not execute the game."),
@@ -659,7 +659,12 @@ fn store_references(name: &str, data: &Value, context: &Context) -> Result<(), F
         "audio" => references.push(&data["wav_artifact"]),
         "memory.diff" => references.extend([&data["left"], &data["right"]]),
         "image.compare" => references.push(&data["diff_artifact"]),
-        "trace" | "watch" => references.push(&data["records_artifact"]),
+        "trace" | "watch" => {
+            references.push(&data["records_artifact"]);
+            if data["coverage"].is_object() {
+                references.push(&data["coverage"]["coverage_artifact"]);
+            }
+        }
         "boot" | "render" | "graphics" => {
             if let Some(map) = data["memory_artifacts"].as_object() {
                 references.extend(map.values());

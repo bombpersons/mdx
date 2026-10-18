@@ -2,6 +2,7 @@ pub mod boot;
 pub mod state;
 pub mod cpu;
 pub mod disasm;
+pub mod ghidra;
 pub mod graphics;
 pub mod header;
 pub mod image;

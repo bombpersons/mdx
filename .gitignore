@@ -1,6 +1,8 @@
 # Build output and local content-addressed stores, at any workspace depth.
 target/
 .mdx/
+# Ghidra databases (`mdx ghidra`); Ghidra rejects hidden paths such as .mdx/.
+ghidra-projects/
 cache/
 rom/
 /crates/mdcore/testdata/*.md

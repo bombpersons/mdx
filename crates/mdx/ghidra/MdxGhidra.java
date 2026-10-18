@@ -433,15 +433,30 @@ public class MdxGhidra extends HeadlessScript {
         } finally { currentProgram.endTransaction(transaction, committed); }
         exportIndex();
     }
+    /** Decompiles each of request.addrs in one decompiler session. */
     private void decompile() throws Exception {
+        var results = new JsonArray();
+        var decompiler = new DecompInterface();
+        try {
+            if (!decompiler.openProgram(currentProgram)) throw new IOException(decompiler.getLastMessage());
+            for (var item : request.getAsJsonArray("addrs")) {
+                monitor.checkCancelled();
+                results.add(decompileOne(decompiler, toAddr(item.getAsLong())));
+            }
+        } finally {
+            decompiler.dispose();
+        }
+        var out = new JsonObject();
+        out.add("results", results);
+        write("query_result", out);
+    }
+    private JsonObject decompileOne(DecompInterface decompiler, Address a) throws Exception {
         var result = new JsonObject();
-        var a = toAddr(request.get("addr").getAsLong());
         var f = getFunctionContaining(a);
         if (f == null) {
             result.addProperty("status", "function_not_found");
             result.addProperty("diagnostic", "No analysed function contains this address; seed it with entries, symbols or runtime evidence.");
-            write("query_result", result);
-            return;
+            return result;
         }
         result.add("function", function(f));
         // The instructions are the ground truth the pseudocode must be checked against.
@@ -457,20 +472,14 @@ public class MdxGhidra extends HeadlessScript {
         }
         result.add("listing", listing);
         result.addProperty("listing_truncated", truncated);
-        var decompiler = new DecompInterface();
-        try {
-            if (!decompiler.openProgram(currentProgram)) throw new IOException(decompiler.getLastMessage());
-            var output = decompiler.decompileFunction(f, request.get("decompile_timeout").getAsInt(), monitor);
-            result.addProperty("status", output.decompileCompleted() ? "complete" : output.isTimedOut() ? "timeout" : "decompile_failed");
-            result.addProperty("diagnostic", output.getErrorMessage());
-            if (output.decompileCompleted()) {
-                result.addProperty("pseudocode", output.getDecompiledFunction().getC());
-                result.getAsJsonObject("function").addProperty("signature", output.getDecompiledFunction().getSignature());
-            }
-        } finally {
-            decompiler.dispose();
+        var output = decompiler.decompileFunction(f, request.get("decompile_timeout").getAsInt(), monitor);
+        result.addProperty("status", output.decompileCompleted() ? "complete" : output.isTimedOut() ? "timeout" : "decompile_failed");
+        result.addProperty("diagnostic", output.getErrorMessage());
+        if (output.decompileCompleted()) {
+            result.addProperty("pseudocode", output.getDecompiledFunction().getC());
+            result.getAsJsonObject("function").addProperty("signature", output.getDecompiledFunction().getSignature());
         }
-        write("query_result", result);
+        return result;
     }
     @Override public void run() throws Exception {
         try (var in = Files.newBufferedReader(Path.of(getScriptArgs()[0]), StandardCharsets.UTF_8)) {
@@ -480,6 +489,6 @@ public class MdxGhidra extends HeadlessScript {
         if (mode.equals("setup")) { setup(); return; }
         if (mode.equals("annotate")) { annotate(); return; }
         if (mode.equals("export")) exportIndex();
-        if (request.has("addr")) decompile();
+        if (request.has("addrs")) decompile();
     }
 }

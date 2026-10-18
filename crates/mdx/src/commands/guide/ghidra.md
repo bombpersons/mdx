@@ -70,6 +70,12 @@ of another), and use data tables inline with code. decompile returns the
 instruction listing beside the pseudocode; trust the listing, and confirm
 behaviour with trace or watch. Pseudocode is most useful for C-compiled games.
 
+Sweeps: ghidra_decompile_batch takes addrs (up to 200) and decompiles them in
+one Ghidra run, returning one result; results are cached per function, so a
+repeat costs nothing. It is brief by default, as is ghidra_decompile with
+brief: pseudocode and named callers/callees without the listing, mapping and
+provenance, which keeps large functions out of result_artifact.
+
 Recording findings: ghidra_annotate renames functions and adds comments as a
 new revision (functions inline or a JSON file). labels:[{addr,name,size,comment}]
 names data: RAM globals, ROM tables, SRAM. Give size 1/2/4 so the address

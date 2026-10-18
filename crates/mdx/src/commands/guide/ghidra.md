@@ -67,10 +67,15 @@ instruction listing beside the pseudocode; trust the listing, and confirm
 behaviour with trace or watch. Pseudocode is most useful for C-compiled games.
 
 Recording findings: ghidra_annotate renames functions and adds comments as a
-new revision (functions inline or a JSON file). ghidra_export_symbols writes
-.symbols.json with names bound to each body's bytes; pass it as symbols to a
-later analysis (other evidence, another state) and names whose bytes differ
-are withheld. Plain "ADDR NAME" files are accepted unverified.
+new revision (functions inline or a JSON file). labels:[{addr,name,size,comment}]
+names data: RAM globals, ROM tables, SRAM. Give size 1/2/4 so the address
+becomes byte/word/dword data; without it a long access reads `_name`. A work
+RAM name also covers its absolute-short alias. ghidra_export_symbols writes
+.symbols.json with function names bound to each body's bytes; pass it as
+symbols to a later analysis (other evidence, another state) and names whose
+bytes differ are withheld. Plain "ADDR NAME [function|data [SIZE]]" files are
+accepted unverified; lines without a kind are functions inside code and data
+elsewhere (e.g. "FFE800 player_x data 2").
 
 Projects: Ghidra rejects paths with hidden components, so its database lives
 in <project_root>/ghidra-projects (or MDX_GHIDRA_PROJECTS); manifests and

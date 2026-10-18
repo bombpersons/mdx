@@ -149,7 +149,9 @@ public class MdxGhidra extends HeadlessScript {
                     if (f == null) throw new IOException("function overlaps existing code");
                     f.setName(s.get("name").getAsString(), s.has("source") && s.get("source").getAsString().equals("imported") ? SourceType.IMPORTED : SourceType.USER_DEFINED);
                 } else {
-                    createLabel(a, s.get("name").getAsString(), false, SourceType.USER_DEFINED);
+                    // Primary, so pseudocode reads the name instead of DAT_/Ram addresses.
+                    createLabel(a, s.get("name").getAsString(), true, SourceType.USER_DEFINED);
+                    sized(a, s);
                 }
             } catch (Exception e) {
                 warnings.add("symbol " + hex(a) + ": " + e.getMessage());
@@ -280,6 +282,17 @@ public class MdxGhidra extends HeadlessScript {
         index.add("warnings", warnings);
         write("index", index);
     }
+    /** Typed data for a named global, so wider accesses resolve to its name. */
+    private void sized(Address a, JsonObject s) throws Exception {
+        if (!s.has("size") || s.get("size").isJsonNull()) return;
+        int size = s.get("size").getAsInt();
+        clearListing(a, a.add(size - 1));
+        switch (size) {
+            case 1: createByte(a); break;
+            case 2: createWord(a); break;
+            default: createDWord(a);
+        }
+    }
     private void annotate() throws Exception {
         int transaction = currentProgram.startTransaction("mdx annotations");
         boolean committed = false;
@@ -297,6 +310,15 @@ public class MdxGhidra extends HeadlessScript {
                 if (p.has("name")) f.setName(p.get("name").getAsString(),
                     p.has("generated") ? SourceType.ANALYSIS : SourceType.USER_DEFINED);
                 if (p.has("comment")) f.setComment(p.get("comment").getAsString());
+            }
+            if (request.has("labels")) {
+                for (var item : request.getAsJsonArray("labels")) {
+                    var l = item.getAsJsonObject();
+                    var a = toAddr(l.get("address").getAsLong());
+                    createLabel(a, l.get("name").getAsString(), true, SourceType.USER_DEFINED);
+                    sized(a, l);
+                    if (l.has("comment")) setEOLComment(a, l.get("comment").getAsString());
+                }
             }
             committed = true;
         } finally { currentProgram.endTransaction(transaction, committed); }

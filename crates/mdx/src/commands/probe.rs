@@ -98,6 +98,13 @@ pub struct ProbeArgs {
     /// start_step, start_pc) and stop_at still refer to the 68000 run.
     #[serde(default)]
     pub cpu: ProbeCpu,
+    /// trace cpu m68000 only: also accumulate every distinct executed PC (hit
+    /// count, first step/frame), every distinct non-sequential control transfer
+    /// and A0-A6 value frequencies across the WHOLE started run, independent of
+    /// max_records, into coverage_artifact (JSONL). Pass that artifact as
+    /// ghidra evidence; max_records 0 keeps only the coverage.
+    #[serde(default)]
+    pub coverage: bool,
     /// cpu z80 only: record Z80 instructions with PC in [start, end).
     pub z80_pc_range: Option<[u16; 2]>,
     /// Console region at power-on: auto (header, like the reference), usa,
@@ -126,6 +133,118 @@ pub struct TraceEvent {
     pub exception: Option<String>,
 }
 
+/// Whole-run execution coverage (trace coverage:true).
+#[derive(Serialize, JsonSchema)]
+pub struct CoverageSummary {
+    /// JSONL: {"kind":"pc",pc,hits,first_step,first_frame} per distinct PC,
+    /// {"kind":"edge",pc,next_pc,hits} per distinct non-sequential transfer,
+    /// then one {"kind":"registers",steps,a:[[[value,count],..] x7]} line.
+    pub coverage_artifact: Artifact,
+    /// Executed 68000 steps counted (started, non-interrupt, CPU not stopped).
+    pub steps: u64,
+    pub distinct_pcs: usize,
+    pub distinct_edges: usize,
+    /// Distinct edges beyond the cap were counted in hits of known edges only.
+    pub edges_truncated: bool,
+    /// Most-executed PCs, for orientation.
+    pub hottest: Vec<CoveragePc>,
+}
+
+#[derive(Clone, Serialize, JsonSchema)]
+pub struct CoveragePc {
+    pub kind: &'static str,
+    pub pc: u32,
+    pub hits: u64,
+    pub first_step: u64,
+    pub first_frame: u64,
+}
+
+const COVERAGE_EDGES: usize = 1 << 20;
+const COVERAGE_REGISTER_VALUES: usize = 4096;
+
+#[derive(Default)]
+struct CoverageAccumulator {
+    steps: u64,
+    pcs: std::collections::HashMap<u32, CoveragePc>,
+    edges: std::collections::HashMap<(u32, u32), u64>,
+    edges_truncated: bool,
+    /// A0-A6 value -> steps; new values stop being added past the cap.
+    registers: Vec<std::collections::HashMap<u32, u64>>,
+}
+
+impl CoverageAccumulator {
+    fn record(&mut self, step: u64, frame: u64, pc: u32, next_pc: u32, a: &[u32; 8], exception: bool) {
+        self.steps += 1;
+        self.pcs
+            .entry(pc)
+            .or_insert(CoveragePc { kind: "pc", pc, hits: 0, first_step: step, first_frame: frame })
+            .hits += 1;
+        // Sequential successors carry no control-flow information; an exception
+        // step's successor is a vector target, not a transfer.
+        let sequential = next_pc > pc && next_pc - pc <= 10;
+        if !sequential && !exception {
+            let len = self.edges.len();
+            match self.edges.get_mut(&(pc, next_pc)) {
+                Some(hits) => *hits += 1,
+                None if len < COVERAGE_EDGES => {
+                    self.edges.insert((pc, next_pc), 1);
+                }
+                None => self.edges_truncated = true,
+            }
+        }
+        self.registers.resize_with(7, Default::default);
+        for (values, &value) in self.registers.iter_mut().zip(a.iter()) {
+            let len = values.len();
+            match values.get_mut(&value) {
+                Some(n) => *n += 1,
+                None if len < COVERAGE_REGISTER_VALUES => {
+                    values.insert(value, 1);
+                }
+                None => {}
+            }
+        }
+    }
+
+    fn finish(self, store: &std::path::Path) -> Result<CoverageSummary, Failure> {
+        let mut pcs: Vec<CoveragePc> = self.pcs.into_values().collect();
+        pcs.sort_by_key(|p| p.pc);
+        let mut edges: Vec<((u32, u32), u64)> = self.edges.into_iter().collect();
+        edges.sort_unstable();
+        let mut out = Vec::new();
+        for p in &pcs {
+            serde_json::to_writer(&mut out, p).unwrap();
+            out.push(b'\n');
+        }
+        for ((pc, next_pc), hits) in &edges {
+            serde_json::to_writer(&mut out, &serde_json::json!({"kind":"edge","pc":pc,"next_pc":next_pc,"hits":hits})).unwrap();
+            out.push(b'\n');
+        }
+        let registers: Vec<Vec<(u32, u64)>> = self
+            .registers
+            .iter()
+            .map(|values| {
+                let mut v: Vec<(u32, u64)> = values.iter().map(|(&k, &n)| (k, n)).collect();
+                v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+                v.truncate(16);
+                v
+            })
+            .collect();
+        serde_json::to_writer(&mut out, &serde_json::json!({"kind":"registers","steps":self.steps,"a":registers})).unwrap();
+        out.push(b'\n');
+        let mut hottest = pcs.clone();
+        hottest.sort_by(|a, b| b.hits.cmp(&a.hits).then(a.pc.cmp(&b.pc)));
+        hottest.truncate(16);
+        Ok(CoverageSummary {
+            coverage_artifact: artifacts::put(store, &out)?,
+            steps: self.steps,
+            distinct_pcs: pcs.len(),
+            distinct_edges: edges.len(),
+            edges_truncated: self.edges_truncated,
+            hottest,
+        })
+    }
+}
+
 #[derive(Serialize, JsonSchema)]
 pub struct ProbeData {
     pub mode: String,
@@ -141,6 +260,9 @@ pub struct ProbeData {
     pub retained_records: usize,
     pub omitted_records: u64,
     pub records_artifact: Artifact,
+    /// Present when coverage was requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<CoverageSummary>,
     pub trace_preview: Vec<TraceEvent>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub z80_trace_preview: Vec<Z80TraceEvent>,
@@ -199,6 +321,12 @@ pub fn run(
             "watch requires a folded work-RAM range",
         ));
     }
+    if args.coverage && (mode != "trace" || args.cpu != ProbeCpu::M68000) {
+        return Err(artifacts::failure(
+            "invalid_arguments",
+            "coverage applies to trace with cpu m68000",
+        ));
+    }
     if mode == "trace" && args.watch.is_some() {
         return Err(artifacts::failure(
             "invalid_arguments",
@@ -229,6 +357,7 @@ pub fn run(
     let mut started = false;
     let mut observed = 0u64;
     let mut traces = Vec::new();
+    let mut accumulator = args.coverage.then(CoverageAccumulator::default);
     let mut termination = "instruction_budget";
     let mut z80_range = match args.watch.as_ref().filter(|_| z80_watch) {
         Some(watch) => {
@@ -326,6 +455,7 @@ pub fn run(
             .is_some_and(|level| system.cpu.sr.accepts(level));
         let executing = !interrupt && !system.cpu.stopped;
         let m68k_trace = mode == "trace" && !z80_trace;
+        let before = (m68k_trace && started && executing && accumulator.is_some()).then(|| (system.cpu.pc, system.cpu.a));
         let cpu = (m68k_trace && started && executing && traces.len() < args.max_records)
             .then(|| {
                 (
@@ -341,6 +471,9 @@ pub fn run(
         let (cycles, exception) = system.step_instruction();
         if exception.is_some() {
             exceptions += 1;
+        }
+        if let (Some(acc), Some((pc, a))) = (accumulator.as_mut(), before) {
+            acc.record(attempted, frame, pc, system.cpu.pc, &a, exception.is_some());
         }
         if m68k_trace && started && executing {
             observed += 1;
@@ -434,6 +567,7 @@ pub fn run(
         }
     }
     let records_artifact = artifacts::put(&context.store, &encoded)?;
+    let coverage_summary = accumulator.map(|acc| acc.finish(&context.store)).transpose()?;
     let mut coverage = Coverage::complete(vec![format!(
         "{attempted} attempted CPU steps; {observed} selected {mode} records observed"
     )]);
@@ -447,7 +581,21 @@ pub fn run(
     if !system.cpu.branch_override.is_empty() {
         coverage.limitations.push("analyst-forced branch outcomes preserved from machine state; modified-execution diagnostic".into());
     }
-    if observed > retained as u64 {
+    if let Some(c) = &coverage_summary {
+        coverage.conditions.push(format!(
+            "whole-run coverage: {} executed steps, {} distinct PCs, {} distinct non-sequential transfers",
+            c.steps, c.distinct_pcs, c.distinct_edges
+        ));
+        coverage.limits.push(format!("coverage: <= {COVERAGE_EDGES} distinct transfers; register frequencies keep the first {COVERAGE_REGISTER_VALUES} distinct values per register, top 16 reported"));
+        coverage.limitations.push("coverage is what this run executed, not all reachable code".into());
+        if c.edges_truncated {
+            coverage.truncated.push(format!("coverage edges[{COVERAGE_EDGES}..]"));
+            coverage.status = CoverageStatus::Partial;
+        }
+    }
+    // With coverage, max_records 0 explicitly declines per-step records.
+    let declined = args.coverage && args.max_records == 0;
+    if observed > retained as u64 && !declined {
         coverage
             .truncated
             .push(format!("records: retained {retained} of {observed}"));
@@ -483,6 +631,7 @@ pub fn run(
             retained_records: retained,
             omitted_records: observed.saturating_sub(retained as u64),
             records_artifact,
+            coverage: coverage_summary,
             trace_preview: traces.into_iter().take(16).collect(),
             z80_trace_preview: z80_steps.into_iter().take(16).collect(),
             z80_write_preview: z80_writes.into_iter().take(16).collect(),

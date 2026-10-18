@@ -69,7 +69,7 @@ enum Command {
         #[command(subcommand)]
         command: SetupCommand,
     },
-    /// Print built-in workflow guidance: overview (default) or port.
+    /// Print built-in workflow guidance: overview (default), port or ghidra.
     Guide {
         #[arg(default_value = "overview")]
         topic: String,
@@ -168,6 +168,11 @@ enum Command {
     /// Processor core checks.
     #[command(subcommand)]
     Cpu(CpuCommand),
+    /// Optional Ghidra analysis: functions, xrefs, decompilation (see `mdx guide ghidra`).
+    Ghidra {
+        #[command(subcommand)]
+        action: commands::ghidra::Action,
+    },
     /// Capture synthesized stereo FM/PSG audio as a WAV artifact.
     Audio {
         #[arg(long)] rom: PathBuf,
@@ -453,6 +458,10 @@ fn main() {
                     3
                 }
             }
+        }
+        Command::Ghidra { action } => {
+            let (name, arguments) = action.operation();
+            run_operation(name, arguments, &context)
         }
         Command::Survey { args } => run_json_operation("survey", &args, &context),
         Command::Trace {

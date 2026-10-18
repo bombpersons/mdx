@@ -274,6 +274,12 @@ with_input!(
         #[serde(default = "function_timeout")]
         #[schemars(range(min = 1, max = 300))]
         pub decompile_timeout: u32,
+        /// Keep only the function, pseudocode, callers/callees and analysis
+        /// identity: drops the instruction listing, mapping and provenance, so
+        /// large functions stay inline instead of spilling to result_artifact.
+        #[arg(long)]
+        #[serde(default)]
+        pub brief: bool,
     }
 );
 with_input!(
@@ -2003,7 +2009,13 @@ pub fn decompile(args: DecompileArgs, ctx: &Context) -> Result<Envelope<Value>> 
     out["callees"] = page(&named(&a, callees), 0, 100);
     out["result_file"] = if result_path.exists() { json!(result_path) } else { Value::Null };
     let mut partial = (status != "complete").then(|| format!("pseudocode (decompile status {status})"));
-    if out["listing_truncated"] == true {
+    if args.brief {
+        let o = out.as_object_mut().unwrap();
+        for key in ["listing", "listing_truncated", "mapping", "provenance"] {
+            o.remove(key);
+        }
+        o.insert("brief".into(), json!(true));
+    } else if out["listing_truncated"] == true {
         partial.get_or_insert_with(|| format!("listing[{LISTING_LIMIT}..]"));
     }
     Ok(envelope("decompile", &a, out, partial))

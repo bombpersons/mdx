@@ -121,7 +121,10 @@ impl I2c {
                     if self.cycles < 9 {
                         self.cycles += 1;
                     } else {
-                        self.device_address <<= self.spec.address_bits;
+                        // Widened like the reference's int promotion: a 16-bit
+                        // word address shifts the device bits out entirely.
+                        self.device_address =
+                            (u32::from(self.device_address) << self.spec.address_bits) as u16;
                         self.cycles = 1;
                         if self.rw {
                             self.state = State::ReadData;

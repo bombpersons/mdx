@@ -171,14 +171,23 @@ fn live_ghidra_volatile_keeps_polled_reads() {
     let marked = marked["data"]["pseudocode"].as_str().unwrap().to_string();
     assert!(marked.contains("delay_counter = 5;") && marked.contains("!= 0);"), "plain:\n{plain}\nvolatile:\n{marked}");
     assert!(!marked.contains("while( true )"), "{marked}");
+    // tst.l sets N and Z from two loads; the unused volatile copy is dropped.
+    assert_eq!(marked.matches("= delay_counter;").count(), 1, "{marked}");
 
     let annotated = call("ghidra.annotate", json!({"analysis":analysis,"labels":[{"addr":"FFFFE4EE","name":"vblank_wait","size":4,"comment":"VBlank decrements"}]}), root);
     assert_eq!(annotated["ok"], true, "{annotated}");
     // WRAM and its absolute-short alias both carry the name.
     assert_eq!(annotated["data"]["labels"].as_array().unwrap().len(), 2, "{annotated}");
+    assert_eq!(annotated["data"]["labels"][0]["address"], "0x00FFE4EE", "{annotated}");
+    assert!(annotated["data"]["label_size_mismatches"].as_array().unwrap().is_empty(), "{annotated}");
     let renamed = call("ghidra.decompile", json!({"analysis":analysis,"addr":"200"}), root);
     let text = renamed["data"]["pseudocode"].as_str().unwrap();
     assert!(text.contains("vblank_wait = 5;"), "{text}");
+    // A word label read by tst.l prints as a partial field; say so.
+    let narrow = call("ghidra.annotate", json!({"analysis":analysis,"labels":[{"addr":"FFE4EE","name":"vblank_wait","size":2}]}), root);
+    let mismatch = &narrow["data"]["label_size_mismatches"][0];
+    assert_eq!((mismatch["size"].as_u64(), mismatch["access_size"].as_u64()), (Some(2), Some(4)), "{narrow}");
+    assert!(narrow["warnings"].as_array().unwrap().iter().any(|w| w["message"].as_str().unwrap().contains("vblank_wait")), "{narrow}");
     let bad = call("ghidra.annotate", json!({"analysis":analysis,"labels":[{"addr":"800000","name":"nowhere"}]}), root);
     assert_eq!(bad["error"]["code"], "invalid_arguments", "{bad}");
 }
@@ -228,6 +237,33 @@ fn live_ghidra_resolves_base_register_thunks() {
     let functions = call("ghidra.functions", json!({"analysis":data["analysis"]}), root);
     let entries: Vec<&str> = functions["data"]["functions"]["items"].as_array().unwrap().iter().map(|f| f["entry"].as_str().unwrap()).collect();
     assert!(!entries.contains(&"0x00000241") && !entries.contains(&"0x00000306"), "{entries:?}");
+}
+
+/// `lea -1254(a5),a0; move.w d1,0(a0,d0.w)` with A5=0x312 indexes the work
+/// RAM table at 0xFFFFFE2C. Ghidra prints the folded base as `+ -0x1d4`; mdx
+/// names it from the lea's reference.
+#[test]
+fn live_ghidra_names_register_relative_bases() {
+    let dir = workspace();
+    let root = dir.path();
+    if call("ghidra.doctor", json!({}), root)["error"]["code"] == "ghidra_unavailable" {
+        eprintln!("skipping: Ghidra not installed");
+        return;
+    }
+    let mut b = vec![0u8; 0x400];
+    b[0..4].copy_from_slice(&0x00FF_1000u32.to_be_bytes());
+    b[4..8].copy_from_slice(&0x200u32.to_be_bytes());
+    b[0x100..0x110].copy_from_slice(b"SEGA MEGA DRIVE ");
+    // add.w d0,d0; lea -1254(a5),a0; move.w d1,0(a0,d0.w); rts
+    let code = [0xD0, 0x40, 0x41, 0xED, 0xFB, 0x1A, 0x31, 0x81, 0, 0, 0x4E, 0x75];
+    b[0x200..0x200 + code.len()].copy_from_slice(&code);
+    fs::write(root.join("lea.md"), b).unwrap();
+    fs::write(root.join("lea.sym"), "200 Store\nFFFE2C table data 2\n").unwrap();
+    let out = call("ghidra.decompile", json!({"rom":"lea.md","addr":"200","registers":["A5=312"],"symbols":["lea.sym"]}), root);
+    assert_eq!(out["ok"], true, "{out}");
+    let text = out["data"]["pseudocode"].as_str().unwrap();
+    assert!(text.contains("&table") && !text.contains("0x1d4"), "{text}");
+    assert_eq!(out["data"]["pseudocode_repairs"]["register_relative_addresses_named"], 1, "{}", out["data"]["pseudocode_repairs"]);
 }
 
 /// The same poll, but the volatile range comes from a watch run: the VBlank

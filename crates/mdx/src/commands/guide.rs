@@ -11,15 +11,18 @@ pub enum Topic {
     Overview,
     /// Building a native port as an engine plus a game, with template.create.
     Port,
+    /// Optional Ghidra analysis: functions, xrefs, decompilation, evidence.
+    Ghidra,
 }
 
 impl Topic {
-    const ALL: [Self; 2] = [Self::Overview, Self::Port];
+    const ALL: [Self; 3] = [Self::Overview, Self::Port, Self::Ghidra];
 
     fn name(self) -> &'static str {
         match self {
             Self::Overview => "overview",
             Self::Port => "port",
+            Self::Ghidra => "ghidra",
         }
     }
 
@@ -27,6 +30,7 @@ impl Topic {
         match self {
             Self::Overview => "Investigate a cartridge with mdx",
             Self::Port => "Port a game as an engine plus the game",
+            Self::Ghidra => "Find functions, xrefs and pseudocode with Ghidra",
         }
     }
 
@@ -34,6 +38,7 @@ impl Topic {
         match self {
             Self::Overview => include_str!("guide/overview.md"),
             Self::Port => include_str!("guide/port.md"),
+            Self::Ghidra => include_str!("guide/ghidra.md"),
         }
     }
 }

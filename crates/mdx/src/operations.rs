@@ -481,7 +481,7 @@ pub fn descriptors() -> Vec<Descriptor> {
     vec![
         descriptor::<commands::template::CreateArgs, commands::template::CreateData>("template.create", "Create a Rust/Bevy port workspace (md-bevy template crate, engine with sandbox, game, importers, docs) at an absolute destination in the calling agent's workspace, e.g. the ROM's folder; existing files are kept, colliding paths refused. Read guide topic port first."),
         descriptor::<commands::template::UpdateArgs, commands::template::UpdateData>("template.update", "Bring a template.create project up to date: replaces unedited md-bevy files, writes <file>.mdx-new beside edited ones, copies changed seeded files under .mdx/template-update. dry_run reports only."),
-        descriptor::<commands::guide::GuideArgs, commands::guide::GuideData>("guide", "Built-in workflow guidance by topic (overview, port). Read port before starting a native port."),
+        descriptor::<commands::guide::GuideArgs, commands::guide::GuideData>("guide", "Built-in workflow guidance by topic (overview, port, ghidra). Read port before starting a native port; ghidra before ghidra_* tools."),
         descriptor::<ImportArgs, ImportData>("artifact.import", "Import a local regular file into the immutable content-addressed store; return its reusable sha256 ID."),
         descriptor::<ReadArtifactArgs, ArtifactPage>("artifact.read", "Read a bounded byte page from a digest-verified artifact as hex or exact UTF-8; reports the next offset."),
         descriptor::<ViewArgs, ArtifactView>("artifact.view", "Inspect a JSON Pointer or page structured JSON/JSONL records from a verified artifact; useful for large boot responses and traces."),
@@ -500,6 +500,13 @@ pub fn descriptors() -> Vec<Descriptor> {
         descriptor::<ConformanceArgs, commands::cpu::ConformanceData>("cpu.conformance", "Run canonical SingleStepTests fixtures with explicit coverage and timing limitations."),
         descriptor::<SnapshotArgs, commands::render::RenderData>("render", "Render digest-verified VDP snapshot buffers without executing CPUs."),
         descriptor::<GraphicsArgs, commands::graphics::GraphicsData>("graphics", "Export all mode-5 patterns, palettes, name tables and sprites from verified snapshot buffers; sprite_groups composes caller-selected sprites into transparent images."),
+        descriptor::<commands::ghidra::DoctorArgs, Value>("ghidra.doctor", "Check that the optional Ghidra install and Java are discoverable (MDX_GHIDRA_HOME or ghidra_home). Usually unnecessary: ghidra queries import automatically."),
+        descriptor::<commands::ghidra::AnalyzeArgs, Value>("ghidra.analyze", "Optional: prewarm a cached Ghidra analysis of a ROM (m68000, or cpu z80 sound driver) with vectors, header, hardware blocks, bank mapping, from_state RAM and runtime evidence. Returns the analysis handle. See guide topic ghidra."),
+        descriptor::<commands::ghidra::FunctionsArgs, Value>("ghidra.functions", "List Ghidra's functions (entries, names, signatures, body ranges) for a rom or analysis handle; filter by name, page with offset/limit."),
+        descriptor::<commands::ghidra::DecompileArgs, Value>("ghidra.decompile", "Pseudocode, instruction listing and callers/callees for the function containing addr (hex, e.g. a watch writer PC). Imports the rom automatically (about a minute first time). Pseudocode is a hypothesis for hand-written 68000; needs local Ghidra."),
+        descriptor::<commands::ghidra::XrefsArgs, Value>("ghidra.xrefs", "References to and from addr (code, ROM data, work RAM alias or hardware register) in a Ghidra analysis, with type and containing function; paged. Indirect references need runtime evidence."),
+        descriptor::<commands::ghidra::AnnotateArgs, Value>("ghidra.annotate", "Apply function renames and comments (functions:[{addr,name,comment}] inline or a file) to a Ghidra analysis as a new revision. User-name collisions fail; generated names yield."),
+        descriptor::<commands::ghidra::ExportArgs, Value>("ghidra.export_symbols", "Export a Ghidra analysis's function names as .symbols.json bound to each body's bytes; reusable as symbols seeds for later analyses."),
         descriptor::<SchemaArgs, SchemaData>("schema", "Describe operation input/output JSON Schemas without loading a cartridge or producing analysis artifacts."),
     ]
 }
@@ -569,9 +576,22 @@ fn workspace_context(
         "artifact.import" => &["path"],
         "artifact.read" | "artifact.view" => &["source"],
         "cpu.conformance" => &["suite"],
+        name if name.starts_with("ghidra.") => &["rom", "from_state", "analysis", "out", "file", "ghidra_home"],
         // Template destinations retain the explicit absolute-path contract.
         _ => &[],
     };
+    // Repeatable path arguments; IDs stay IDs.
+    if name.starts_with("ghidra.") {
+        for key in ["evidence", "symbols"] {
+            if let Some(Value::Array(items)) = object.get_mut(key) {
+                for item in items {
+                    if let Some(source) = item.as_str().filter(|s| !s.starts_with("sha256:")) {
+                        *item = serde_json::to_value(rooted(PathBuf::from(source))).unwrap();
+                    }
+                }
+            }
+        }
+    }
     for key in paths {
         if let Some(value) = object.get_mut(*key) {
             if let Some(source) = value.as_str() {
@@ -1046,6 +1066,7 @@ fn execute_inner(
                 &args.sprite_groups,
             )?)
         }
+        name if name.starts_with("ghidra.") => commands::ghidra::run(name, arguments, context)?,
         "schema" => {
             let args: SchemaArgs = parse(arguments)?;
             if args.limit == 0 || args.limit > 4 {
